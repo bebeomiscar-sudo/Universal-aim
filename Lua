@@ -1,0 +1,635 @@
+--[[
+    UNIVERSAL SILENT AIM & AIMBOT v1.0 — LinoriaLib Edition
+    Works on any Roblox game
+    Features: Silent Aim | Aimbot | FOV Circle
+]]
+
+-- ═══════════════════════════════════════════
+-- SERVICES
+-- ═══════════════════════════════════════════
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local UIS          = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local LP       = Players.LocalPlayer
+local camera   = workspace.CurrentCamera
+local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+
+-- ═══════════════════════════════════════════
+-- LINORIA LIBRARY
+-- ═══════════════════════════════════════════
+local repo         = "https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/"
+local Library      = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+Library.ShowToggleFrameInKeybinds = true
+
+local Window = Library:CreateWindow({
+    Title                = "Universal Tool v1.0",
+    Center               = true,
+    AutoShow             = true,
+    Resizable            = true,
+    ShowCustomCursor     = false,
+    UnlockMouseWhileOpen = true,
+    NotifySide           = "Left",
+    TabPadding           = 8,
+    MenuFadeTime         = 0.2,
+    Size                 = UDim2.fromOffset(480, 560),
+})
+
+local Tabs = {
+    SilentAim = Window:AddTab("Silent Aim"),
+    Aimbot    = Window:AddTab("Aimbot"),
+    Settings  = Window:AddTab("Settings"),
+}
+
+-- ═══════════════════════════════════════════
+-- CONFIGS
+-- ═══════════════════════════════════════════
+local SACFG = {
+    On          = false,
+    HitChance   = 100,
+    JumpPredict = true,
+    VisCheck    = false,
+    TeamCheck   = false,
+    TargetPart  = "Head",
+    FOVOn       = true,
+    FOVSize     = 200,
+    IgnoreFOV   = false,
+}
+
+local AimCFG = {
+    On           = false,
+    Speed        = 8,
+    SpeedScale   = 50,
+    MaxLockOn    = 5,
+    ReactionTime = 150,
+    FOV          = 150,
+    DrawFOV      = true,
+    VisCheck     = false,
+    TeamCheck    = false,
+    TargetPart   = "Head",
+}
+
+-- ═══════════════════════════════════════════
+-- UTILITY
+-- ═══════════════════════════════════════════
+local function getCenter()
+    return Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+end
+
+local function angleDiff(from, to)
+    local d = to - from
+    return ((d + math.pi) % (math.pi * 2)) - math.pi
+end
+
+local function isVisible(part)
+    local origin = camera.CFrame.Position
+    local dir    = part.Position - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {LP.Character, part.Parent}
+    local hit = workspace:Raycast(origin, dir, params)
+    return hit == nil or hit.Instance:IsDescendantOf(part.Parent)
+end
+
+local function isSameTeam(p)
+    if LP.Team and p.Team then return LP.Team == p.Team end
+    local mt = LP:GetAttribute("TeamID")
+    local pt = p:GetAttribute("TeamID")
+    if mt and pt then
+        return string.byte(tostring(mt) or "\0") == string.byte(tostring(pt) or "\0")
+    end
+    return false
+end
+
+local PART_PRIORITY = {
+    ["Head"]       = {"Head"},
+    ["Torso"]      = {"UpperTorso", "LowerTorso", "HumanoidRootPart"},
+    ["Head+Torso"] = {"Head", "UpperTorso", "LowerTorso"},
+}
+
+local function getBestPart(char, setting)
+    local names = PART_PRIORITY[setting] or {"Head"}
+    for _, n in ipairs(names) do
+        local p = char:FindFirstChild(n)
+        if p then return p end
+    end
+    return nil
+end
+
+-- ═══════════════════════════════════════════
+-- JUMP PREDICTION
+-- ═══════════════════════════════════════════
+local GRAVITY          = workspace.Gravity
+local KNIFE_TRAVEL_EST = 0.12
+
+local function getPredictedPosition(char)
+    local head = char:FindFirstChild("Head")
+    local hrp  = char:FindFirstChild("HumanoidRootPart")
+    local hum  = char:FindFirstChildOfClass("Humanoid")
+    if not head or not hrp then
+        return head and head.Position
+    end
+
+    local basePos    = head.Position
+    local isGrounded = hum and hum.FloorMaterial ~= Enum.Material.Air
+    if isGrounded then return basePos end
+
+    local vel = hrp.AssemblyLinearVelocity
+    local dt  = KNIFE_TRAVEL_EST
+
+    return basePos + Vector3.new(
+        vel.X * dt,
+        vel.Y * dt - 0.5 * GRAVITY * dt * dt,
+        vel.Z * dt
+    )
+end
+
+-- ═══════════════════════════════════════════
+-- FOV CIRCLES
+-- ═══════════════════════════════════════════
+local saFovCircle  = nil
+local aimFovCircle = nil
+
+pcall(function()
+    saFovCircle            = Drawing.new("Circle")
+    saFovCircle.NumSides   = 64
+    saFovCircle.Filled     = false
+    saFovCircle.Thickness  = 1.5
+    saFovCircle.Visible    = false
+    saFovCircle.Color      = Color3.fromRGB(100, 255, 100)
+    saFovCircle.Transparency = 0.75
+
+    aimFovCircle           = Drawing.new("Circle")
+    aimFovCircle.NumSides  = 64
+    aimFovCircle.Filled    = false
+    aimFovCircle.Thickness = 1.5
+    aimFovCircle.Visible   = false
+    aimFovCircle.Color     = Color3.fromRGB(255, 255, 255)
+    aimFovCircle.Transparency = 0.75
+end)
+
+-- ═══════════════════════════════════════════
+-- SILENT AIM
+-- ═══════════════════════════════════════════
+local saTarget      = nil
+local saHookApplied = false
+local saHookIdx     = nil
+local saConn        = nil
+
+local function saGetTarget()
+    local c = getCenter()
+    local best, bd = nil, SACFG.IgnoreFOV and math.huge or SACFG.FOVSize
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LP then continue end
+        if SACFG.TeamCheck and isSameTeam(p) then continue end
+        local ch = p.Character; if not ch then continue end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+        local part = getBestPart(ch, SACFG.TargetPart)
+        if not part then continue end
+        if SACFG.VisCheck and not isVisible(part) then continue end
+        local sp, on = camera:WorldToScreenPoint(part.Position)
+        if not on then continue end
+        local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+        if d < bd then
+            bd   = d
+            best = {part = part, char = ch}
+        end
+    end
+    return best
+end
+
+local function startSAHook()
+    if not saHookApplied then
+        local ok = pcall(function()
+            saHookIdx = hookmetamethod(game, "__index", newcclosure(function(self, idx, ...)
+                if SACFG.On and not checkcaller()
+                and idx == "ViewportSize" and self == workspace.CurrentCamera then
+                    if saTarget and math.random(1, 100) <= SACFG.HitChance then
+                        local pos, on = workspace.CurrentCamera:WorldToViewportPoint(saTarget)
+                        if on then return Vector2.new(pos.X * 2, pos.Y * 2) end
+                    end
+                end
+                return saHookIdx(self, idx, ...)
+            end))
+        end)
+        if ok then
+            saHookApplied = true
+            Library:Notify("Silent Aim hook applied ✓", 3)
+        else
+            Library:Notify("Hook failed — executor may not support it", 4)
+        end
+    end
+
+    if saConn then saConn:Disconnect() end
+    saConn = RunService.Heartbeat:Connect(function()
+        if not SACFG.On then saTarget = nil; return end
+        local result = saGetTarget()
+        if not result then saTarget = nil; return end
+
+        if SACFG.JumpPredict then
+            saTarget = getPredictedPosition(result.char)
+                or result.part.Position
+        else
+            saTarget = result.part.Position
+        end
+    end)
+end
+
+local function stopSA()
+    SACFG.On = false
+    saTarget  = nil
+    if saConn then saConn:Disconnect(); saConn = nil end
+end
+
+-- ═══════════════════════════════════════════
+-- AIMBOT
+-- Speed        = base smoothness
+-- SpeedScale   = how much FOV distance
+--                affects smoothness (0-100)
+-- MaxLockOn    = max seconds to lock one target
+-- ReactionTime = delay before locking (ms)
+-- ═══════════════════════════════════════════
+local lockedTarget  = nil
+local lockTimer     = 0
+local reactionTimer = 0
+local isInReaction  = false
+
+local function isTargetValid(part)
+    if not part or not part.Parent then return false end
+    local hum = part.Parent:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if AimCFG.VisCheck and not isVisible(part) then return false end
+    if AimCFG.TeamCheck then
+        local p = Players:GetPlayerFromCharacter(part.Parent)
+        if p and isSameTeam(p) then return false end
+    end
+    local sp, on = camera:WorldToScreenPoint(part.Position)
+    if not on then return false end
+    local d = (Vector2.new(sp.X, sp.Y) - getCenter()).Magnitude
+    if d > AimCFG.FOV then return false end
+    return true
+end
+
+local function findAimTarget()
+    local c = getCenter()
+    local best, bd = nil, AimCFG.FOV
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LP then continue end
+        if AimCFG.TeamCheck and isSameTeam(p) then continue end
+        local ch = p.Character; if not ch then continue end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+        local part = getBestPart(ch, AimCFG.TargetPart)
+        if not part then continue end
+        if AimCFG.VisCheck and not isVisible(part) then continue end
+        local sp, on = camera:WorldToScreenPoint(part.Position)
+        if not on then continue end
+        local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
+        if d < bd then
+            bd   = d
+            best = part
+        end
+    end
+    return best
+end
+
+-- Aimbot runs on RenderStepped at Camera+2
+-- so it overrides the game camera at Camera+1
+RunService:BindToRenderStep("univ_aimbot", Enum.RenderPriority.Camera.Value + 2, function(dt)
+    camera = workspace.CurrentCamera
+    if not AimCFG.On then return end
+
+    -- Reaction time delay
+    if isInReaction then
+        reactionTimer = reactionTimer - dt
+        if reactionTimer <= 0 then
+            isInReaction = false
+        else
+            return
+        end
+    end
+
+    -- Revalidate existing lock
+    if lockedTarget and not isTargetValid(lockedTarget) then
+        lockedTarget = nil
+        lockTimer    = 0
+    end
+
+    -- Find new target if no lock
+    if not lockedTarget then
+        local newT = findAimTarget()
+        if newT then
+            lockedTarget  = newT
+            lockTimer     = 0
+            isInReaction  = true
+            reactionTimer = AimCFG.ReactionTime / 1000
+        end
+    end
+
+    if not lockedTarget then return end
+
+    -- Max lock on time
+    lockTimer = lockTimer + dt
+    if lockTimer > AimCFG.MaxLockOn then
+        lockedTarget = nil
+        lockTimer    = 0
+        return
+    end
+
+    -- Calculate smooth speed
+    -- SpeedScale makes smoothness increase the
+    -- further the target is from center
+    local c      = getCenter()
+    local sp2, on2 = camera:WorldToScreenPoint(lockedTarget.Position)
+    if not on2 then return end
+    local screenDist = (Vector2.new(sp2.X, sp2.Y) - c).Magnitude
+    local scaleFactor = 1 + (screenDist / math.max(AimCFG.FOV, 1))
+        * (AimCFG.SpeedScale / 100)
+    local smooth = math.clamp(1 / (AimCFG.Speed * scaleFactor), 0.01, 1)
+
+    -- Move camera toward target
+    local cp     = camera.CFrame.Position
+    local dir    = (lockedTarget.Position - cp).Unit
+    local tPitch = math.asin(math.clamp(dir.Y, -1, 1))
+    local tYaw   = math.atan2(-dir.X, -dir.Z)
+    local cPitch, cYaw = camera.CFrame:ToOrientation()
+    local nPitch = cPitch + angleDiff(cPitch, tPitch) * smooth
+    local nYaw   = cYaw   + angleDiff(cYaw,   tYaw)   * smooth
+
+    pcall(function()
+        camera.CFrame = CFrame.new(cp)
+            * CFrame.Angles(0, nYaw, 0)
+            * CFrame.Angles(nPitch, 0, 0)
+    end)
+end)
+
+local function stopAimbot()
+    AimCFG.On    = false
+    lockedTarget = nil
+    lockTimer    = 0
+    reactionTimer = 0
+    isInReaction = false
+end
+
+-- ═══════════════════════════════════════════
+-- UI — SILENT AIM TAB
+-- ═══════════════════════════════════════════
+local SA_L = Tabs.SilentAim:AddLeftGroupbox("Silent Aim")
+local SA_R = Tabs.SilentAim:AddRightGroupbox("FOV & Settings")
+
+SA_L:AddLabel("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
+SA_L:AddToggle("SAOn", {Text = "Enable Silent Aim", Default = false, Callback = function(v)
+    SACFG.On = v
+    if v then
+        startSAHook()
+        Library:Notify("Silent Aim enabled!", 3)
+    else
+        stopSA()
+        Library:Notify("Silent Aim disabled", 2)
+    end
+end})
+SA_L:AddSlider("SAHit", {
+    Text     = "Hit Chance (%)",
+    Default  = 100,
+    Min      = 1,
+    Max      = 100,
+    Rounding = 0,
+    Callback = function(v)
+        SACFG.HitChance = v
+    end
+})
+SA_L:AddToggle("SAJump", {Text = "Jump Prediction", Default = true, Callback = function(v)
+    SACFG.JumpPredict = v
+end})
+SA_L:AddSlider("SAKnife", {
+    Text     = "Knife Travel (ms)",
+    Default  = 120,
+    Min      = 50,
+    Max      = 300,
+    Rounding = 0,
+    Callback = function(v)
+        KNIFE_TRAVEL_EST = v / 1000
+    end
+})
+SA_L:AddToggle("SAVis", {Text = "Visible Check", Default = false, Callback = function(v)
+    SACFG.VisCheck = v
+end})
+SA_L:AddToggle("SATeam", {Text = "Team Check", Default = false, Callback = function(v)
+    SACFG.TeamCheck = v
+end})
+SA_L:AddDropdown("SAPart", {
+    Text     = "Target Part",
+    Default  = "Head",
+    Values   = {"Head", "Torso", "Head+Torso"},
+    Callback = function(v)
+        SACFG.TargetPart = v
+    end
+})
+
+SA_R:AddToggle("SAIgnFOV", {Text = "Ignore FOV", Default = false, Callback = function(v)
+    SACFG.IgnoreFOV = v
+    if saFovCircle then
+        saFovCircle.Visible = not v and SACFG.FOVOn and SACFG.On
+    end
+end})
+SA_R:AddSlider("SAFOVSize", {
+    Text     = "FOV Size (px)",
+    Default  = 200,
+    Min      = 10,
+    Max      = 600,
+    Rounding = 0,
+    Callback = function(v)
+        SACFG.FOVSize = v
+        if saFovCircle then saFovCircle.Radius = v end
+    end
+})
+SA_R:AddToggle("SAFOVDraw", {Text = "Draw FOV Circle", Default = true, Callback = function(v)
+    SACFG.FOVOn = v
+    if saFovCircle then
+        saFovCircle.Visible = v and SACFG.On and not SACFG.IgnoreFOV
+    end
+end})
+SA_R:AddLabel("FOV Color"):AddColorPicker("SAFOVColor", {
+    Default  = Color3.fromRGB(100, 255, 100),
+    Callback = function(v)
+        if saFovCircle then saFovCircle.Color = v end
+    end
+})
+
+-- ═══════════════════════════════════════════
+-- UI — AIMBOT TAB
+-- ═══════════════════════════════════════════
+local AB_L = Tabs.Aimbot:AddLeftGroupbox("Aimbot")
+local AB_R = Tabs.Aimbot:AddRightGroupbox("FOV & Lock Settings")
+
+AB_L:AddToggle("AimOn", {Text = "Enable Aimbot", Default = false, Callback = function(v)
+    AimCFG.On = v
+    if not v then
+        stopAimbot()
+        Library:Notify("Aimbot disabled", 2)
+    else
+        Library:Notify("Aimbot enabled", 3)
+    end
+end})
+AB_L:AddSlider("AimSpeed", {
+    Text     = "Speed",
+    Default  = 8,
+    Min      = 1,
+    Max      = 50,
+    Rounding = 1,
+    Callback = function(v)
+        AimCFG.Speed = v
+    end
+})
+AB_L:AddSlider("AimSpeedScale", {
+    Text     = "Speed Scale (%)",
+    Default  = 50,
+    Min      = 0,
+    Max      = 100,
+    Rounding = 0,
+    Callback = function(v)
+        -- Higher = smoothness increases more
+        -- as target gets further from center
+        AimCFG.SpeedScale = v
+    end
+})
+AB_L:AddSlider("AimMaxLock", {
+    Text     = "Max Lock On (s)",
+    Default  = 5,
+    Min      = 1,
+    Max      = 15,
+    Rounding = 1,
+    Callback = function(v)
+        AimCFG.MaxLockOn = v
+    end
+})
+AB_L:AddSlider("AimReact", {
+    Text     = "Reaction Time (ms)",
+    Default  = 150,
+    Min      = 0,
+    Max      = 600,
+    Rounding = 0,
+    Callback = function(v)
+        -- Delay before aimbot starts tracking
+        -- Makes it look more human
+        AimCFG.ReactionTime = v
+    end
+})
+AB_L:AddToggle("AimVis", {Text = "Visible Check", Default = false, Callback = function(v)
+    AimCFG.VisCheck = v
+end})
+AB_L:AddToggle("AimTeam", {Text = "Team Check", Default = false, Callback = function(v)
+    AimCFG.TeamCheck = v
+end})
+AB_L:AddDropdown("AimPart", {
+    Text     = "Target Part",
+    Default  = "Head",
+    Values   = {"Head", "Torso", "Head+Torso"},
+    Callback = function(v)
+        AimCFG.TargetPart = v
+    end
+})
+
+AB_R:AddSlider("AimFOV", {
+    Text     = "FOV Size (px)",
+    Default  = 150,
+    Min      = 10,
+    Max      = 600,
+    Rounding = 0,
+    Callback = function(v)
+        AimCFG.FOV = v
+        if aimFovCircle then aimFovCircle.Radius = v end
+    end
+})
+AB_R:AddToggle("AimDrawFOV", {Text = "Draw FOV Circle", Default = true, Callback = function(v)
+    AimCFG.DrawFOV = v
+    if aimFovCircle then
+        aimFovCircle.Visible = v and AimCFG.On
+    end
+end})
+AB_R:AddLabel("FOV Color"):AddColorPicker("AimFOVColor", {
+    Default  = Color3.fromRGB(255, 255, 255),
+    Callback = function(v)
+        if aimFovCircle then aimFovCircle.Color = v end
+    end
+})
+AB_R:AddLabel("— Speed Scale Info —")
+AB_R:AddLabel("0 = constant speed")
+AB_R:AddLabel("100 = very smooth at distance")
+AB_R:AddLabel("— Reaction Time Info —")
+AB_R:AddLabel("0ms = instant lock")
+AB_R:AddLabel("150ms = human-like delay")
+
+-- ═══════════════════════════════════════════
+-- UI — SETTINGS TAB
+-- ═══════════════════════════════════════════
+local ST_L = Tabs.Settings:AddLeftGroupbox("Info")
+local ST_R = Tabs.Settings:AddRightGroupbox("Controls")
+
+ST_L:AddLabel("Universal Tool v1.0")
+ST_L:AddLabel("Platform: " .. (IsMobile and "MOBILE" or "PC"))
+ST_L:AddLabel("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
+ST_L:AddLabel("Game: " .. tostring(game.PlaceId))
+
+ST_R:AddButton({Text = "Stop All Features", Func = function()
+    stopSA()
+    stopAimbot()
+    if saFovCircle   then saFovCircle.Visible   = false end
+    if aimFovCircle  then aimFovCircle.Visible  = false end
+
+    pcall(function() Options.SAOn:SetValue(false)  end)
+    pcall(function() Options.AimOn:SetValue(false) end)
+
+    Library:Notify("All features stopped", 3)
+end})
+ST_R:AddButton({Text = "Unload UI", Func = function()
+    stopSA()
+    stopAimbot()
+    pcall(function() RunService:UnbindFromRenderStep("univ_aimbot") end)
+    if saFovCircle  then pcall(function() saFovCircle:Remove()  end) end
+    if aimFovCircle then pcall(function() aimFovCircle:Remove() end) end
+    Library:Unload()
+end})
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+ThemeManager:SetFolder("UniversalTool_v1")
+SaveManager:SetFolder("UniversalTool_v1")
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
+
+-- ═══════════════════════════════════════════
+-- CORE LOOP
+-- ═══════════════════════════════════════════
+RunService.RenderStepped:Connect(function()
+    camera = workspace.CurrentCamera
+    local center = getCenter()
+
+    -- SA FOV circle
+    if saFovCircle then
+        saFovCircle.Position = center
+        saFovCircle.Radius   = SACFG.FOVSize
+        saFovCircle.Visible  = SACFG.FOVOn and SACFG.On and not SACFG.IgnoreFOV
+    end
+
+    -- Aimbot FOV circle
+    if aimFovCircle then
+        aimFovCircle.Position = center
+        aimFovCircle.Radius   = AimCFG.FOV
+        aimFovCircle.Visible  = AimCFG.DrawFOV and AimCFG.On
+    end
+end)
+
+-- ═══════════════════════════════════════════
+-- DONE
+-- ═══════════════════════════════════════════
+Library:Notify("Universal Tool v1.0 — " .. (IsMobile and "MOBILE" or "PC"), 5)
+print("[UNIVERSAL TOOL v1.0] " .. (IsMobile and "MOBILE" or "PC"))
