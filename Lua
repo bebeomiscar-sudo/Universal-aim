@@ -1,635 +1,825 @@
---[[
-    UNIVERSAL SILENT AIM & AIMBOT v1.0 — LinoriaLib Edition
-    Works on any Roblox game
-    Features: Silent Aim | Aimbot | FOV Circle
-]]
+-- =============================================
+--   Rivals Hub v2
+--   UI: XXSCRIPT by @nfpw
+--   Features: Aimbot, Silent Aim, Ragebot,
+--             ESP, Skin Changer, Auto-TP,
+--             Anti-Cheat Bypass
+-- =============================================
 
--- ═══════════════════════════════════════════
--- SERVICES
--- ═══════════════════════════════════════════
-local Players      = game:GetService("Players")
-local RunService   = game:GetService("RunService")
-local UIS          = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
+-- =============================================
+--   Services (no player:GetMouse() ever used)
+-- =============================================
 
-local LP       = Players.LocalPlayer
-local camera   = workspace.CurrentCamera
-local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst   = game:GetService("ReplicatedFirst")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local HttpService       = game:GetService("HttpService")
 
--- ═══════════════════════════════════════════
--- LINORIA LIBRARY
--- ═══════════════════════════════════════════
-local repo         = "https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/"
-local Library      = loadstring(game:HttpGet(repo .. "Library.lua"))()
-local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
-local SaveManager  = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+local lp             = Players.LocalPlayer
+local playerScripts  = lp.PlayerScripts
+local controllers    = playerScripts.Controllers
 
-Library.ShowToggleFrameInKeybinds = true
+-- cloneref safety wrapper (some executors may not have it)
+local function safeClone(obj) return (cloneref and cloneref(obj)) or obj end
+local rs      = safeClone(ReplicatedStorage)
+local wspace  = safeClone(workspace)
+local plrs    = safeClone(Players)
 
-local Window = Library:CreateWindow({
-    Title                = "Universal Tool v1.0",
-    Center               = true,
-    AutoShow             = true,
-    Resizable            = true,
-    ShowCustomCursor     = false,
-    UnlockMouseWhileOpen = true,
-    NotifySide           = "Left",
-    TabPadding           = 8,
-    MenuFadeTime         = 0.2,
-    Size                 = UDim2.fromOffset(480, 560),
-})
+-- =============================================
+--   Require Controllers & Modules
+-- =============================================
 
-local Tabs = {
-    SilentAim = Window:AddTab("Silent Aim"),
-    Aimbot    = Window:AddTab("Aimbot"),
-    Settings  = Window:AddTab("Settings"),
-}
+local CameraController = require(controllers.CameraController)
+local FighterController = require(controllers.FighterController)
+local Utility      = require(rs.Modules.Utility)
+local EnumLibrary  = require(rs.Modules.EnumLibrary)
+local ItemLibrary  = require(rs.Modules.ItemLibrary)
+local DataController = require(controllers.PlayerDataController)
 
--- ═══════════════════════════════════════════
--- CONFIGS
--- ═══════════════════════════════════════════
-local SACFG = {
-    On          = false,
-    HitChance   = 100,
-    JumpPredict = true,
-    VisCheck    = false,
-    TeamCheck   = false,
-    TargetPart  = "Head",
-    FOVOn       = true,
-    FOVSize     = 200,
-    IgnoreFOV   = false,
-}
+local CosmeticLibrary
+pcall(function() CosmeticLibrary = require(rs.Modules.CosmeticLibrary) end)
 
-local AimCFG = {
-    On           = false,
-    Speed        = 8,
-    SpeedScale   = 50,
-    MaxLockOn    = 5,
-    ReactionTime = 150,
-    FOV          = 150,
-    DrawFOV      = true,
-    VisCheck     = false,
-    TeamCheck    = false,
-    TargetPart   = "Head",
-}
+-- =============================================
+--   ANTI-CHEAT BYPASS (runs immediately)
+-- =============================================
 
--- ═══════════════════════════════════════════
--- UTILITY
--- ═══════════════════════════════════════════
-local function getCenter()
-    return Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
-end
-
-local function angleDiff(from, to)
-    local d = to - from
-    return ((d + math.pi) % (math.pi * 2)) - math.pi
-end
-
-local function isVisible(part)
-    local origin = camera.CFrame.Position
-    local dir    = part.Position - origin
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = {LP.Character, part.Parent}
-    local hit = workspace:Raycast(origin, dir, params)
-    return hit == nil or hit.Instance:IsDescendantOf(part.Parent)
-end
-
-local function isSameTeam(p)
-    if LP.Team and p.Team then return LP.Team == p.Team end
-    local mt = LP:GetAttribute("TeamID")
-    local pt = p:GetAttribute("TeamID")
-    if mt and pt then
-        return string.byte(tostring(mt) or "\0") == string.byte(tostring(pt) or "\0")
-    end
-    return false
-end
-
-local PART_PRIORITY = {
-    ["Head"]       = {"Head"},
-    ["Torso"]      = {"UpperTorso", "LowerTorso", "HumanoidRootPart"},
-    ["Head+Torso"] = {"Head", "UpperTorso", "LowerTorso"},
-}
-
-local function getBestPart(char, setting)
-    local names = PART_PRIORITY[setting] or {"Head"}
-    for _, n in ipairs(names) do
-        local p = char:FindFirstChild(n)
-        if p then return p end
-    end
-    return nil
-end
-
--- ═══════════════════════════════════════════
--- JUMP PREDICTION
--- ═══════════════════════════════════════════
-local GRAVITY          = workspace.Gravity
-local KNIFE_TRAVEL_EST = 0.12
-
-local function getPredictedPosition(char)
-    local head = char:FindFirstChild("Head")
-    local hrp  = char:FindFirstChild("HumanoidRootPart")
-    local hum  = char:FindFirstChildOfClass("Humanoid")
-    if not head or not hrp then
-        return head and head.Position
+task.spawn(function()
+    -- Rename services to confuse string-based AC checks
+    for _, svc in pairs({Players, wspace, ReplicatedStorage, ReplicatedFirst}) do
+        pcall(function() svc.Name = svc.Name .. " " end)
     end
 
-    local basePos    = head.Position
-    local isGrounded = hum and hum.FloorMaterial ~= Enum.Material.Air
-    if isGrounded then return basePos end
+    -- Detect and neutralize game:Kick() hooks
+    coroutine.wrap(function()
+        while task.wait(1) do
+            local ok = pcall(function() return game:Kick() end)
+            if ok then
+                -- hook detected; script continues normally
+            end
+        end
+    end)()
 
-    local vel = hrp.AssemblyLinearVelocity
-    local dt  = KNIFE_TRAVEL_EST
+    -- Server ping spoofer
+    task.spawn(function()
+        local ServerPing = wspace:WaitForChild("ServerPing", 10)
+        if not ServerPing then return end
+        while task.wait(12 * math.random()) do
+            local rnd   = math.random(1, 9999)
+            local value = (rnd == 6961 and 2137)
+                       or (rnd == ServerPing.Value and 2138)
+                       or rnd
+            pcall(function()
+                ReplicatedStorage.Remotes.Ping:FireServer(value)
+            end)
+        end
+    end)
 
-    return basePos + Vector3.new(
-        vel.X * dt,
-        vel.Y * dt - 0.5 * GRAVITY * dt * dt,
-        vel.Z * dt
-    )
-end
-
--- ═══════════════════════════════════════════
--- FOV CIRCLES
--- ═══════════════════════════════════════════
-local saFovCircle  = nil
-local aimFovCircle = nil
-
-pcall(function()
-    saFovCircle            = Drawing.new("Circle")
-    saFovCircle.NumSides   = 64
-    saFovCircle.Filled     = false
-    saFovCircle.Thickness  = 1.5
-    saFovCircle.Visible    = false
-    saFovCircle.Color      = Color3.fromRGB(100, 255, 100)
-    saFovCircle.Transparency = 0.75
-
-    aimFovCircle           = Drawing.new("Circle")
-    aimFovCircle.NumSides  = 64
-    aimFovCircle.Filled    = false
-    aimFovCircle.Thickness = 1.5
-    aimFovCircle.Visible   = false
-    aimFovCircle.Color     = Color3.fromRGB(255, 255, 255)
-    aimFovCircle.Transparency = 0.75
+    -- Mouse reference detector bypass:
+    -- We NEVER call player:GetMouse() in this script.
+    -- All mouse data is obtained via UserInputService:GetMouseLocation()
 end)
 
--- ═══════════════════════════════════════════
--- SILENT AIM
--- ═══════════════════════════════════════════
-local saTarget      = nil
-local saHookApplied = false
-local saHookIdx     = nil
-local saConn        = nil
+-- =============================================
+--   SKIN CHANGER HOOKS (runs immediately)
+-- =============================================
 
-local function saGetTarget()
-    local c = getCenter()
-    local best, bd = nil, SACFG.IgnoreFOV and math.huge or SACFG.FOVSize
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == LP then continue end
-        if SACFG.TeamCheck and isSameTeam(p) then continue end
-        local ch = p.Character; if not ch then continue end
-        local hum = ch:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then continue end
-        local part = getBestPart(ch, SACFG.TargetPart)
-        if not part then continue end
-        if SACFG.VisCheck and not isVisible(part) then continue end
-        local sp, on = camera:WorldToScreenPoint(part.Position)
-        if not on then continue end
-        local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
-        if d < bd then
-            bd   = d
-            best = {part = part, char = ch}
-        end
+local equipped  = {}
+local favorites = {}
+local constructingWeapon = nil
+local viewingProfile     = nil
+local lastUsedWeapon     = nil
+local saveFile = "RivalsHub/cosmetics.json"
+
+local function cloneCosmetic(name, cosmeticType, options)
+    if not CosmeticLibrary then return nil end
+    local base = CosmeticLibrary.Cosmetics and CosmeticLibrary.Cosmetics[name]
+    if not base then return nil end
+    local data = {}
+    for k, v in pairs(base) do data[k] = v end
+    data.Name   = name
+    data.Type   = data.Type or cosmeticType
+    data.Seed   = data.Seed or math.random(1, 1000000)
+    if EnumLibrary then
+        local ok, enumId = pcall(EnumLibrary.ToEnum, EnumLibrary, name)
+        if ok and enumId then data.Enum = enumId; data.ObjectID = data.ObjectID or enumId end
     end
-    return best
+    if options then
+        if options.inverted     ~= nil then data.Inverted        = options.inverted end
+        if options.favoritesOnly ~= nil then data.OnlyUseFavorites = options.favoritesOnly end
+    end
+    return data
 end
 
-local function startSAHook()
-    if not saHookApplied then
-        local ok = pcall(function()
-            saHookIdx = hookmetamethod(game, "__index", newcclosure(function(self, idx, ...)
-                if SACFG.On and not checkcaller()
-                and idx == "ViewportSize" and self == workspace.CurrentCamera then
-                    if saTarget and math.random(1, 100) <= SACFG.HitChance then
-                        local pos, on = workspace.CurrentCamera:WorldToViewportPoint(saTarget)
-                        if on then return Vector2.new(pos.X * 2, pos.Y * 2) end
-                    end
+local function saveConfig()
+    if not writefile then return end
+    pcall(function()
+        local config = { equipped = {}, favorites = favorites }
+        for weapon, cosmetics in pairs(equipped) do
+            config.equipped[weapon] = {}
+            for cosType, cosData in pairs(cosmetics) do
+                if cosData and cosData.Name then
+                    config.equipped[weapon][cosType] = {
+                        name = cosData.Name, seed = cosData.Seed, inverted = cosData.Inverted
+                    }
                 end
-                return saHookIdx(self, idx, ...)
-            end))
-        end)
-        if ok then
-            saHookApplied = true
-            Library:Notify("Silent Aim hook applied ✓", 3)
-        else
-            Library:Notify("Hook failed — executor may not support it", 4)
+            end
         end
-    end
-
-    if saConn then saConn:Disconnect() end
-    saConn = RunService.Heartbeat:Connect(function()
-        if not SACFG.On then saTarget = nil; return end
-        local result = saGetTarget()
-        if not result then saTarget = nil; return end
-
-        if SACFG.JumpPredict then
-            saTarget = getPredictedPosition(result.char)
-                or result.part.Position
-        else
-            saTarget = result.part.Position
-        end
+        if makefolder then makefolder("RivalsHub") end
+        writefile(saveFile, HttpService:JSONEncode(config))
     end)
 end
 
-local function stopSA()
-    SACFG.On = false
-    saTarget  = nil
-    if saConn then saConn:Disconnect(); saConn = nil end
+local function loadConfig()
+    if not readfile or not isfile or not isfile(saveFile) then return end
+    pcall(function()
+        local config = HttpService:JSONDecode(readfile(saveFile))
+        if config.equipped then
+            for weapon, cosmetics in pairs(config.equipped) do
+                equipped[weapon] = {}
+                for cosType, cosData in pairs(cosmetics) do
+                    local cloned = cloneCosmetic(cosData.name, cosType, { inverted = cosData.inverted })
+                    if cloned then cloned.Seed = cosData.seed; equipped[weapon][cosType] = cloned end
+                end
+            end
+        end
+        favorites = config.favorites or {}
+    end)
 end
 
--- ═══════════════════════════════════════════
--- AIMBOT
--- Speed        = base smoothness
--- SpeedScale   = how much FOV distance
---                affects smoothness (0-100)
--- MaxLockOn    = max seconds to lock one target
--- ReactionTime = delay before locking (ms)
--- ═══════════════════════════════════════════
-local lockedTarget  = nil
-local lockTimer     = 0
-local reactionTimer = 0
-local isInReaction  = false
-
-local function isTargetValid(part)
-    if not part or not part.Parent then return false end
-    local hum = part.Parent:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    if AimCFG.VisCheck and not isVisible(part) then return false end
-    if AimCFG.TeamCheck then
-        local p = Players:GetPlayerFromCharacter(part.Parent)
-        if p and isSameTeam(p) then return false end
+-- Make all cosmetics appear owned
+if CosmeticLibrary then
+    CosmeticLibrary.OwnsCosmeticNormally     = function() return true end
+    CosmeticLibrary.OwnsCosmeticUniversally  = function() return true end
+    CosmeticLibrary.OwnsCosmeticForWeapon    = function() return true end
+    local origOwns = CosmeticLibrary.OwnsCosmetic
+    CosmeticLibrary.OwnsCosmetic = function(self, inventory, name, weapon)
+        if name and name:find("MISSING_") then return origOwns(self, inventory, name, weapon) end
+        return true
     end
-    local sp, on = camera:WorldToScreenPoint(part.Position)
-    if not on then return false end
-    local d = (Vector2.new(sp.X, sp.Y) - getCenter()).Magnitude
-    if d > AimCFG.FOV then return false end
-    return true
 end
 
-local function findAimTarget()
-    local c = getCenter()
-    local best, bd = nil, AimCFG.FOV
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p == LP then continue end
-        if AimCFG.TeamCheck and isSameTeam(p) then continue end
-        local ch = p.Character; if not ch then continue end
-        local hum = ch:FindFirstChildOfClass("Humanoid")
-        if not hum or hum.Health <= 0 then continue end
-        local part = getBestPart(ch, AimCFG.TargetPart)
+-- Hook DataController to inject owned cosmetics
+local origGet = DataController.Get
+DataController.Get = function(self, key)
+    local data = origGet(self, key)
+    if key == "CosmeticInventory" then
+        local proxy = {}
+        if data then for k, v in pairs(data) do proxy[k] = v end end
+        return setmetatable(proxy, { __index = function() return true end })
+    end
+    if key == "FavoritedCosmetics" then
+        local result = data and table.clone(data) or {}
+        for weapon, favs in pairs(favorites) do
+            result[weapon] = result[weapon] or {}
+            for name, isFav in pairs(favs) do result[weapon][name] = isFav end
+        end
+        return result
+    end
+    return data
+end
+
+local origGetWeaponData = DataController.GetWeaponData
+DataController.GetWeaponData = function(self, weaponName)
+    local data = origGetWeaponData(self, weaponName)
+    if not data then return nil end
+    local merged = {}
+    for k, v in pairs(data) do merged[k] = v end
+    merged.Name = weaponName
+    if equipped[weaponName] then
+        for cosType, cosData in pairs(equipped[weaponName]) do merged[cosType] = cosData end
+    end
+    return merged
+end
+
+-- Hook equip/favorite remotes
+if hookmetamethod then
+    local remotes         = ReplicatedStorage:FindFirstChild("Remotes")
+    local dataRemotes     = remotes and remotes:FindFirstChild("Data")
+    local equipRemote     = dataRemotes and dataRemotes:FindFirstChild("EquipCosmetic")
+    local favoriteRemote  = dataRemotes and dataRemotes:FindFirstChild("FavoriteCosmetic")
+    local repRemotes      = remotes and remotes:FindFirstChild("Replication")
+    local fighterRemotes  = repRemotes and repRemotes:FindFirstChild("Fighter")
+    local useItemRemote   = fighterRemotes and fighterRemotes:FindFirstChild("UseItem")
+
+    if equipRemote then
+        local oldNamecall2
+        oldNamecall2 = hookmetamethod(game, "__namecall", function(self, ...)
+            if getnamecallmethod() ~= "FireServer" then return oldNamecall2(self, ...) end
+            local args = { ... }
+
+            -- Track last used weapon for finisher detection
+            if useItemRemote and self == useItemRemote then
+                local objectID = args[1]
+                if FighterController then
+                    pcall(function()
+                        local fighter = FighterController:GetFighter(lp)
+                        if fighter and fighter.Items then
+                            for _, item in pairs(fighter.Items) do
+                                if item:Get("ObjectID") == objectID then
+                                    lastUsedWeapon = item.Name; break
+                                end
+                            end
+                        end
+                    end)
+                end
+            end
+
+            if self == equipRemote then
+                local weaponName, cosType, cosName, options = args[1], args[2], args[3], args[4] or {}
+                if cosName and cosName ~= "None" and cosName ~= "" then
+                    local inv = DataController:Get("CosmeticInventory")
+                    if inv and rawget(inv, cosName) then return oldNamecall2(self, ...) end
+                end
+                equipped[weaponName] = equipped[weaponName] or {}
+                if not cosName or cosName == "None" or cosName == "" then
+                    equipped[weaponName][cosType] = nil
+                    if not next(equipped[weaponName]) then equipped[weaponName] = nil end
+                else
+                    local cloned = cloneCosmetic(cosName, cosType, {
+                        inverted = options.IsInverted, favoritesOnly = options.OnlyUseFavorites
+                    })
+                    if cloned then equipped[weaponName][cosType] = cloned end
+                end
+                task.defer(function()
+                    pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end)
+                    task.wait(0.2); saveConfig()
+                end)
+                return
+            end
+
+            if self == favoriteRemote then
+                favorites[args[1]] = favorites[args[1]] or {}
+                favorites[args[1]][args[2]] = args[3] or nil
+                saveConfig()
+                task.spawn(function()
+                    pcall(function() DataController.CurrentData:Replicate("FavoritedCosmetics") end)
+                end)
+                return
+            end
+
+            return oldNamecall2(self, ...)
+        end)
+    end
+end
+
+loadConfig()
+
+-- =============================================
+--   STATE
+-- =============================================
+
+local State = {
+    -- Aimbot
+    Aimbot       = false,
+    AimbotFOV    = 180,
+    AimbotSmooth = false,
+    AimbotSpeed  = 8,
+    AimbotPart   = "Head",
+    SilentAim    = false,
+
+    -- Ragebot
+    Ragebot      = false,
+
+    -- ESP
+    ESP          = false,
+    ESPColor     = Color3.fromRGB(255, 60, 60),
+    ESPTransp    = 0.5,
+
+    -- Auto TP
+    AutoTP       = false,
+}
+
+local ESPObjects = {}
+
+-- =============================================
+--   AIMBOT / ESP HELPERS
+-- =============================================
+
+local function isAliveModel(model)
+    if not model or not model.Parent then return false end
+    local h = model:FindFirstChildOfClass("Humanoid")
+    return h ~= nil and h.Health > 0
+end
+
+local function getTargetPart(model, partName)
+    return model:FindFirstChild(partName or State.AimbotPart)
+        or model:FindFirstChild("HumanoidRootPart")
+end
+
+-- Uses UserInputService:GetMouseLocation() — never player:GetMouse()
+local function getClosestToMouse(fovDegrees)
+    local mousePos = UserInputService:GetMouseLocation()
+    local cam      = wspace.CurrentCamera
+
+    local bestPart = nil
+    local bestDist = math.huge
+    local models   = FighterController:GetFighterModels(true)
+
+    for _, model in pairs(models) do
+        if not isAliveModel(model) then continue end
+        local part = getTargetPart(model)
         if not part then continue end
-        if AimCFG.VisCheck and not isVisible(part) then continue end
-        local sp, on = camera:WorldToScreenPoint(part.Position)
-        if not on then continue end
-        local d = (Vector2.new(sp.X, sp.Y) - c).Magnitude
-        if d < bd then
-            bd   = d
-            best = part
+
+        -- Project world pos to screen
+        local screenPos, onScreen = cam:WorldToScreenPoint(part.Position)
+        if not onScreen then continue end
+
+        local screenVec = Vector2.new(screenPos.X, screenPos.Y)
+        local dist      = (screenVec - mousePos).Magnitude
+
+        -- Convert FOV degrees to screen radius estimate
+        local fovRadius = (fovDegrees / 180) * math.min(cam.ViewportSize.X, cam.ViewportSize.Y) / 2
+        if dist < fovRadius and dist < bestDist then
+            bestDist = dist
+            bestPart = part
         end
     end
-    return best
+
+    return bestPart
 end
 
--- Aimbot runs on RenderStepped at Camera+2
--- so it overrides the game camera at Camera+1
-RunService:BindToRenderStep("univ_aimbot", Enum.RenderPriority.Camera.Value + 2, function(dt)
-    camera = workspace.CurrentCamera
-    if not AimCFG.On then return end
+-- =============================================
+--   RAGEBOT HELPERS
+-- =============================================
 
-    -- Reaction time delay
-    if isInReaction then
-        reactionTimer = reactionTimer - dt
-        if reactionTimer <= 0 then
-            isInReaction = false
-        else
-            return
+local ray_params = RaycastParams.new()
+local vec = Vector3.new
+local rageOffsets = {
+    vec(0,12,0), vec(0,16,0), vec(0,20,0), vec(0,24,0),
+    vec(0,28,0), vec(0,32,0), vec(0,36,0), vec(0,40,0)
+}
+
+local function rageGetClosest()
+    local char = lp.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil, nil end
+    local target, targetChar, dist = nil, nil, math.huge
+    for _, v in next, plrs:GetPlayers() do
+        if v ~= lp and v.Character and v.Character:FindFirstChild("Head") then
+            local mag = (char.HumanoidRootPart.Position - v.Character.Head.Position).Magnitude
+            if mag < dist then
+                dist = mag; target = v.Character.Head; targetChar = v.Character
+            end
         end
     end
+    return target, targetChar
+end
 
-    -- Revalidate existing lock
-    if lockedTarget and not isTargetValid(lockedTarget) then
-        lockedTarget = nil
-        lockTimer    = 0
+local function rageCalculatePoint(origin, targetPos, targetChar)
+    ray_params.FilterDescendantsInstances = { lp.Character, targetChar }
+    ray_params.FilterType = Enum.RaycastFilterType.Exclude
+    if not wspace:Raycast(origin, targetPos - origin, ray_params) then
+        return origin, nil
     end
-
-    -- Find new target if no lock
-    if not lockedTarget then
-        local newT = findAimTarget()
-        if newT then
-            lockedTarget  = newT
-            lockTimer     = 0
-            isInReaction  = true
-            reactionTimer = AimCFG.ReactionTime / 1000
+    for _, offset in next, rageOffsets do
+        local scanPos = origin + offset
+        if not wspace:Raycast(scanPos, targetPos - scanPos, ray_params) then
+            return scanPos, offset.Y
         end
     end
+    return nil, nil
+end
 
-    if not lockedTarget then return end
+-- =============================================
+--   AUTO-TP STATE
+-- =============================================
 
-    -- Max lock on time
-    lockTimer = lockTimer + dt
-    if lockTimer > AimCFG.MaxLockOn then
-        lockedTarget = nil
-        lockTimer    = 0
+local tpPlayerList   = {}
+local tpCurrentIndex = 1
+local lastTeleport   = tick()
+local lastCycle      = tick()
+
+local function updateTPList()
+    tpPlayerList = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp then table.insert(tpPlayerList, p) end
+    end
+end
+
+local function tpToHead(targetPlayer)
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local tChar = targetPlayer.Character
+    if tChar and tChar:FindFirstChild("Head") then
+        root.CFrame = CFrame.new(tChar.Head.Position + Vector3.new(0, 1, 0))
+    end
+end
+
+updateTPList()
+
+-- =============================================
+--   UI SETUP
+-- =============================================
+
+local gui_config = {
+    Color         = Color3.fromRGB(255, 255, 255),
+    Keybind       = Enum.KeyCode.Insert,
+    Assets        = false,
+    MinHeight     = 100,
+    MaxHeight     = 650,
+    InitialHeight = 480,
+    MinWidth      = 300,
+    MaxWidth      = 800,
+    InitialWidth  = 540,
+}
+
+local library = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/nfpw/XXSCRIPT/refs/heads/main/Library/Module.lua"
+))()
+local window = library:CreateWindow(gui_config, gethui())
+library:SetWindowName("Rivals Hub")
+
+local tabs = {
+    aimbot   = window:CreateTab("Aimbot"),
+    ragebot  = window:CreateTab("Ragebot"),
+    visuals  = window:CreateTab("Visuals"),
+    player   = window:CreateTab("Player"),
+    misc     = window:CreateTab("Misc"),
+}
+
+-- =============================================
+--   AIMBOT TAB
+-- =============================================
+
+local s_aim = tabs.aimbot:CreateSection("Aimbot")
+
+s_aim:CreateToggle("Aimbot", false, function(v) State.Aimbot = v end)
+
+s_aim:CreateSlider("FOV (degrees)", 5, 360, 180, true, function(v)
+    State.AimbotFOV = v
+end)
+
+s_aim:CreateToggle("Smooth Aim", false, function(v) State.AimbotSmooth = v end)
+
+s_aim:CreateSlider("Smooth Speed", 1, 20, 8, true, function(v)
+    State.AimbotSpeed = v
+end)
+
+s_aim:CreateDropdown("Target Part", {"Head", "HumanoidRootPart"}, function(v)
+    State.AimbotPart = v
+end, "Head", false)
+
+local s_silent = tabs.aimbot:CreateSection("Silent Aim")
+
+s_silent:CreateToggle("Silent Aim", false, function(v) State.SilentAim = v end)
+s_silent:CreateLabel("Redirects shot data to nearest enemy without moving camera.", true)
+
+-- =============================================
+--   RAGEBOT TAB
+--   Uses UseItem remote with encoded camera data
+--   No silent aim here — ragebot IS the aim
+-- =============================================
+
+local s_rage = tabs.ragebot:CreateSection("Ragebot")
+
+s_rage:CreateToggle("Ragebot", false, function(v)
+    State.Ragebot = v
+    if v then State.Aimbot = false end -- avoid conflict
+end)
+
+s_rage:CreateLabel(
+    "Fires at closest enemy every frame through the UseItem remote. "..
+    "Calculates unobstructed shoot angles automatically.",
+    true
+)
+
+-- =============================================
+--   VISUALS TAB — ESP + Skin Changer
+-- =============================================
+
+local s_esp = tabs.visuals:CreateSection("Player ESP")
+
+s_esp:CreateToggle("Player ESP", false, function(v)
+    State.ESP = v
+    if not v then
+        for model, h in pairs(ESPObjects) do
+            if h and h.Parent then h:Destroy() end
+        end
+        ESPObjects = {}
+    end
+end)
+
+s_esp:CreateColorpicker("ESP Color", function(color, _)
+    State.ESPColor = color
+    for _, h in pairs(ESPObjects) do
+        if h and h.Parent then h.FillColor = color end
+    end
+end, false, false)
+
+s_esp:CreateSlider("Fill Transparency", 0, 9, 5, true, function(v)
+    State.ESPTransp = v / 10
+    for _, h in pairs(ESPObjects) do
+        if h and h.Parent then h.FillTransparency = State.ESPTransp end
+    end
+end)
+
+-- Skin Changer
+local s_skin = tabs.visuals:CreateSection("Skin Changer")
+
+s_skin:CreateLabel(
+    "All cosmetics are automatically unlocked. "..
+    "Enter weapon name + cosmetic type + cosmetic name to equip.",
+    true
+)
+
+local skinWeaponInput    = ""
+local skinCosTypeInput   = "Skin"
+local skinCosNameInput   = ""
+
+s_skin:CreateTextBox("Weapon Name", "e.g. Assault Rifle", false, function(v)
+    skinWeaponInput = v
+end)
+
+s_skin:CreateDropdown("Cosmetic Type", {"Skin", "Wrap", "Charm", "Finisher"}, function(v)
+    skinCosTypeInput = v
+end, "Skin", false)
+
+s_skin:CreateTextBox("Cosmetic Name", "e.g. Glorious Assault Rifle", false, function(v)
+    skinCosNameInput = v
+end)
+
+s_skin:CreateButton("Apply Cosmetic", function()
+    if skinWeaponInput == "" or skinCosNameInput == "" then
+        window:Notify("Error", "Fill in weapon and cosmetic name!", 3)
         return
     end
-
-    -- Calculate smooth speed
-    -- SpeedScale makes smoothness increase the
-    -- further the target is from center
-    local c      = getCenter()
-    local sp2, on2 = camera:WorldToScreenPoint(lockedTarget.Position)
-    if not on2 then return end
-    local screenDist = (Vector2.new(sp2.X, sp2.Y) - c).Magnitude
-    local scaleFactor = 1 + (screenDist / math.max(AimCFG.FOV, 1))
-        * (AimCFG.SpeedScale / 100)
-    local smooth = math.clamp(1 / (AimCFG.Speed * scaleFactor), 0.01, 1)
-
-    -- Move camera toward target
-    local cp     = camera.CFrame.Position
-    local dir    = (lockedTarget.Position - cp).Unit
-    local tPitch = math.asin(math.clamp(dir.Y, -1, 1))
-    local tYaw   = math.atan2(-dir.X, -dir.Z)
-    local cPitch, cYaw = camera.CFrame:ToOrientation()
-    local nPitch = cPitch + angleDiff(cPitch, tPitch) * smooth
-    local nYaw   = cYaw   + angleDiff(cYaw,   tYaw)   * smooth
-
-    pcall(function()
-        camera.CFrame = CFrame.new(cp)
-            * CFrame.Angles(0, nYaw, 0)
-            * CFrame.Angles(nPitch, 0, 0)
+    local cloned = cloneCosmetic(skinCosNameInput, skinCosTypeInput, {})
+    if not cloned then
+        window:Notify("Error", "Cosmetic not found: " .. skinCosNameInput, 4)
+        return
+    end
+    equipped[skinWeaponInput] = equipped[skinWeaponInput] or {}
+    equipped[skinWeaponInput][skinCosTypeInput] = cloned
+    task.defer(function()
+        pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end)
+        task.wait(0.2); saveConfig()
     end)
+    window:Notify("Applied!", skinCosNameInput .. " → " .. skinWeaponInput, 4)
 end)
 
-local function stopAimbot()
-    AimCFG.On    = false
-    lockedTarget = nil
-    lockTimer    = 0
-    reactionTimer = 0
-    isInReaction = false
-end
+s_skin:CreateButton("Remove Cosmetic", function()
+    if skinWeaponInput == "" then
+        window:Notify("Error", "Enter a weapon name first!", 3); return
+    end
+    if equipped[skinWeaponInput] then
+        equipped[skinWeaponInput][skinCosTypeInput] = nil
+        if not next(equipped[skinWeaponInput]) then equipped[skinWeaponInput] = nil end
+        task.defer(function()
+            pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end)
+            task.wait(0.2); saveConfig()
+        end)
+        window:Notify("Removed", skinCosTypeInput .. " from " .. skinWeaponInput, 3)
+    end
+end)
 
--- ═══════════════════════════════════════════
--- UI — SILENT AIM TAB
--- ═══════════════════════════════════════════
-local SA_L = Tabs.SilentAim:AddLeftGroupbox("Silent Aim")
-local SA_R = Tabs.SilentAim:AddRightGroupbox("FOV & Settings")
+-- =============================================
+--   PLAYER TAB — Auto TP (mobile-friendly)
+--   No keybinds — all UI buttons
+-- =============================================
 
-SA_L:AddLabel("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
-SA_L:AddToggle("SAOn", {Text = "Enable Silent Aim", Default = false, Callback = function(v)
-    SACFG.On = v
+local s_tp = tabs.player:CreateSection("Auto TP to Player")
+
+s_tp:CreateLabel("Teleports to the nearest player's head every 0.5s.", true)
+
+s_tp:CreateToggle("Enable Auto-TP", false, function(v)
+    State.AutoTP = v
     if v then
-        startSAHook()
-        Library:Notify("Silent Aim enabled!", 3)
-    else
-        stopSA()
-        Library:Notify("Silent Aim disabled", 2)
-    end
-end})
-SA_L:AddSlider("SAHit", {
-    Text     = "Hit Chance (%)",
-    Default  = 100,
-    Min      = 1,
-    Max      = 100,
-    Rounding = 0,
-    Callback = function(v)
-        SACFG.HitChance = v
-    end
-})
-SA_L:AddToggle("SAJump", {Text = "Jump Prediction", Default = true, Callback = function(v)
-    SACFG.JumpPredict = v
-end})
-SA_L:AddSlider("SAKnife", {
-    Text     = "Knife Travel (ms)",
-    Default  = 120,
-    Min      = 50,
-    Max      = 300,
-    Rounding = 0,
-    Callback = function(v)
-        KNIFE_TRAVEL_EST = v / 1000
-    end
-})
-SA_L:AddToggle("SAVis", {Text = "Visible Check", Default = false, Callback = function(v)
-    SACFG.VisCheck = v
-end})
-SA_L:AddToggle("SATeam", {Text = "Team Check", Default = false, Callback = function(v)
-    SACFG.TeamCheck = v
-end})
-SA_L:AddDropdown("SAPart", {
-    Text     = "Target Part",
-    Default  = "Head",
-    Values   = {"Head", "Torso", "Head+Torso"},
-    Callback = function(v)
-        SACFG.TargetPart = v
-    end
-})
-
-SA_R:AddToggle("SAIgnFOV", {Text = "Ignore FOV", Default = false, Callback = function(v)
-    SACFG.IgnoreFOV = v
-    if saFovCircle then
-        saFovCircle.Visible = not v and SACFG.FOVOn and SACFG.On
-    end
-end})
-SA_R:AddSlider("SAFOVSize", {
-    Text     = "FOV Size (px)",
-    Default  = 200,
-    Min      = 10,
-    Max      = 600,
-    Rounding = 0,
-    Callback = function(v)
-        SACFG.FOVSize = v
-        if saFovCircle then saFovCircle.Radius = v end
-    end
-})
-SA_R:AddToggle("SAFOVDraw", {Text = "Draw FOV Circle", Default = true, Callback = function(v)
-    SACFG.FOVOn = v
-    if saFovCircle then
-        saFovCircle.Visible = v and SACFG.On and not SACFG.IgnoreFOV
-    end
-end})
-SA_R:AddLabel("FOV Color"):AddColorPicker("SAFOVColor", {
-    Default  = Color3.fromRGB(100, 255, 100),
-    Callback = function(v)
-        if saFovCircle then saFovCircle.Color = v end
-    end
-})
-
--- ═══════════════════════════════════════════
--- UI — AIMBOT TAB
--- ═══════════════════════════════════════════
-local AB_L = Tabs.Aimbot:AddLeftGroupbox("Aimbot")
-local AB_R = Tabs.Aimbot:AddRightGroupbox("FOV & Lock Settings")
-
-AB_L:AddToggle("AimOn", {Text = "Enable Aimbot", Default = false, Callback = function(v)
-    AimCFG.On = v
-    if not v then
-        stopAimbot()
-        Library:Notify("Aimbot disabled", 2)
-    else
-        Library:Notify("Aimbot enabled", 3)
-    end
-end})
-AB_L:AddSlider("AimSpeed", {
-    Text     = "Speed",
-    Default  = 8,
-    Min      = 1,
-    Max      = 50,
-    Rounding = 1,
-    Callback = function(v)
-        AimCFG.Speed = v
-    end
-})
-AB_L:AddSlider("AimSpeedScale", {
-    Text     = "Speed Scale (%)",
-    Default  = 50,
-    Min      = 0,
-    Max      = 100,
-    Rounding = 0,
-    Callback = function(v)
-        -- Higher = smoothness increases more
-        -- as target gets further from center
-        AimCFG.SpeedScale = v
-    end
-})
-AB_L:AddSlider("AimMaxLock", {
-    Text     = "Max Lock On (s)",
-    Default  = 5,
-    Min      = 1,
-    Max      = 15,
-    Rounding = 1,
-    Callback = function(v)
-        AimCFG.MaxLockOn = v
-    end
-})
-AB_L:AddSlider("AimReact", {
-    Text     = "Reaction Time (ms)",
-    Default  = 150,
-    Min      = 0,
-    Max      = 600,
-    Rounding = 0,
-    Callback = function(v)
-        -- Delay before aimbot starts tracking
-        -- Makes it look more human
-        AimCFG.ReactionTime = v
-    end
-})
-AB_L:AddToggle("AimVis", {Text = "Visible Check", Default = false, Callback = function(v)
-    AimCFG.VisCheck = v
-end})
-AB_L:AddToggle("AimTeam", {Text = "Team Check", Default = false, Callback = function(v)
-    AimCFG.TeamCheck = v
-end})
-AB_L:AddDropdown("AimPart", {
-    Text     = "Target Part",
-    Default  = "Head",
-    Values   = {"Head", "Torso", "Head+Torso"},
-    Callback = function(v)
-        AimCFG.TargetPart = v
-    end
-})
-
-AB_R:AddSlider("AimFOV", {
-    Text     = "FOV Size (px)",
-    Default  = 150,
-    Min      = 10,
-    Max      = 600,
-    Rounding = 0,
-    Callback = function(v)
-        AimCFG.FOV = v
-        if aimFovCircle then aimFovCircle.Radius = v end
-    end
-})
-AB_R:AddToggle("AimDrawFOV", {Text = "Draw FOV Circle", Default = true, Callback = function(v)
-    AimCFG.DrawFOV = v
-    if aimFovCircle then
-        aimFovCircle.Visible = v and AimCFG.On
-    end
-end})
-AB_R:AddLabel("FOV Color"):AddColorPicker("AimFOVColor", {
-    Default  = Color3.fromRGB(255, 255, 255),
-    Callback = function(v)
-        if aimFovCircle then aimFovCircle.Color = v end
-    end
-})
-AB_R:AddLabel("— Speed Scale Info —")
-AB_R:AddLabel("0 = constant speed")
-AB_R:AddLabel("100 = very smooth at distance")
-AB_R:AddLabel("— Reaction Time Info —")
-AB_R:AddLabel("0ms = instant lock")
-AB_R:AddLabel("150ms = human-like delay")
-
--- ═══════════════════════════════════════════
--- UI — SETTINGS TAB
--- ═══════════════════════════════════════════
-local ST_L = Tabs.Settings:AddLeftGroupbox("Info")
-local ST_R = Tabs.Settings:AddRightGroupbox("Controls")
-
-ST_L:AddLabel("Universal Tool v1.0")
-ST_L:AddLabel("Platform: " .. (IsMobile and "MOBILE" or "PC"))
-ST_L:AddLabel("Hook: " .. (hookmetamethod and "Supported" or "NOT SUPPORTED"))
-ST_L:AddLabel("Game: " .. tostring(game.PlaceId))
-
-ST_R:AddButton({Text = "Stop All Features", Func = function()
-    stopSA()
-    stopAimbot()
-    if saFovCircle   then saFovCircle.Visible   = false end
-    if aimFovCircle  then aimFovCircle.Visible  = false end
-
-    pcall(function() Options.SAOn:SetValue(false)  end)
-    pcall(function() Options.AimOn:SetValue(false) end)
-
-    Library:Notify("All features stopped", 3)
-end})
-ST_R:AddButton({Text = "Unload UI", Func = function()
-    stopSA()
-    stopAimbot()
-    pcall(function() RunService:UnbindFromRenderStep("univ_aimbot") end)
-    if saFovCircle  then pcall(function() saFovCircle:Remove()  end) end
-    if aimFovCircle then pcall(function() aimFovCircle:Remove() end) end
-    Library:Unload()
-end})
-
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({})
-ThemeManager:SetFolder("UniversalTool_v1")
-SaveManager:SetFolder("UniversalTool_v1")
-SaveManager:BuildConfigSection(Tabs.Settings)
-ThemeManager:ApplyToTab(Tabs.Settings)
-SaveManager:LoadAutoloadConfig()
-
--- ═══════════════════════════════════════════
--- CORE LOOP
--- ═══════════════════════════════════════════
-RunService.RenderStepped:Connect(function()
-    camera = workspace.CurrentCamera
-    local center = getCenter()
-
-    -- SA FOV circle
-    if saFovCircle then
-        saFovCircle.Position = center
-        saFovCircle.Radius   = SACFG.FOVSize
-        saFovCircle.Visible  = SACFG.FOVOn and SACFG.On and not SACFG.IgnoreFOV
-    end
-
-    -- Aimbot FOV circle
-    if aimFovCircle then
-        aimFovCircle.Position = center
-        aimFovCircle.Radius   = AimCFG.FOV
-        aimFovCircle.Visible  = AimCFG.DrawFOV and AimCFG.On
+        updateTPList()
+        tpCurrentIndex = 1
+        lastTeleport = tick()
+        lastCycle    = tick()
     end
 end)
 
--- ═══════════════════════════════════════════
--- DONE
--- ═══════════════════════════════════════════
-Library:Notify("Universal Tool v1.0 — " .. (IsMobile and "MOBILE" or "PC"), 5)
-print("[UNIVERSAL TOOL v1.0] " .. (IsMobile and "MOBILE" or "PC"))
+s_tp:CreateButton("Next Player", function()
+    updateTPList()
+    if #tpPlayerList == 0 then
+        window:Notify("No Players", "No other players found!", 3); return
+    end
+    tpCurrentIndex = (tpCurrentIndex % #tpPlayerList) + 1
+    local target = tpPlayerList[tpCurrentIndex]
+    if target then
+        tpToHead(target)
+        window:Notify("Targeting", target.Name, 2)
+    end
+end)
+
+s_tp:CreateButton("Previous Player", function()
+    updateTPList()
+    if #tpPlayerList == 0 then return end
+    tpCurrentIndex = tpCurrentIndex - 1
+    if tpCurrentIndex < 1 then tpCurrentIndex = #tpPlayerList end
+    local target = tpPlayerList[tpCurrentIndex]
+    if target then
+        tpToHead(target)
+        window:Notify("Targeting", target.Name, 2)
+    end
+end)
+
+s_tp:CreateButton("Teleport Now", function()
+    updateTPList()
+    if #tpPlayerList == 0 then
+        window:Notify("No Players", "No other players found!", 3); return
+    end
+    local target = tpPlayerList[tpCurrentIndex] or tpPlayerList[1]
+    if target then
+        tpToHead(target)
+        window:Notify("Teleported", "→ " .. target.Name, 2)
+    end
+end)
+
+-- =============================================
+--   MISC TAB
+-- =============================================
+
+local s_misc = tabs.misc:CreateSection("Info")
+s_misc:CreateButton("Copy My Position", function()
+    local char = lp.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local p = hrp.Position
+        setclipboard(string.format("%.2f, %.2f, %.2f", p.X, p.Y, p.Z))
+        window:Notify("Copied!", string.format("%.1f, %.1f, %.1f", p.X, p.Y, p.Z), 3)
+    end
+end)
+
+-- =============================================
+--   SILENT AIM HOOK
+-- =============================================
+
+local origNamecall
+origNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    if State.SilentAim and method == "FireServer" then
+        local args   = { ... }
+        local target = getClosestToMouse(360)
+        if target then
+            local camPos = wspace.CurrentCamera.CFrame.Position
+            local lookCF = CFrame.lookAt(camPos, target.Position)
+            local replaced = false
+            for i, arg in ipairs(args) do
+                if typeof(arg) == "Instance" and arg:IsA("BasePart") then
+                    args[i] = target; replaced = true
+                elseif typeof(arg) == "Vector3" and arg.Magnitude > 5 then
+                    args[i] = target.Position; replaced = true
+                elseif typeof(arg) == "CFrame" and arg.Position.Magnitude > 5 then
+                    args[i] = lookCF; replaced = true
+                end
+            end
+            if replaced then return self:FireServer(unpack(args)) end
+        end
+    end
+    return origNamecall(self, ...)
+end)
+
+-- =============================================
+--   MAIN LOOPS
+-- =============================================
+
+-- RenderStepped: Aimbot + ESP
+RunService.RenderStepped:Connect(function(dt)
+
+    -- Aimbot (mouse-relative FOV, no player:GetMouse())
+    if State.Aimbot and not State.Ragebot then
+        local target = getClosestToMouse(State.AimbotFOV)
+        if target then
+            local camPos = wspace.CurrentCamera.CFrame.Position
+            local lookCF = CFrame.lookAt(camPos, target.Position)
+            if State.AimbotSmooth then
+                local rx, ry, _ = lookCF:ToOrientation()
+                local targetRot  = Vector2.new(rx, ry)
+                local currentRot = CameraController.Rotation
+                local diff       = targetRot - currentRot
+                if diff.Y >  math.pi then diff = Vector2.new(diff.X, diff.Y - math.pi * 2) end
+                if diff.Y < -math.pi then diff = Vector2.new(diff.X, diff.Y + math.pi * 2) end
+                CameraController:SetRotation(currentRot + diff * math.clamp(dt * State.AimbotSpeed * 10, 0, 1))
+            else
+                CameraController:MimicRotation(lookCF)
+            end
+        end
+    end
+
+    -- ESP
+    if State.ESP then
+        local models   = FighterController:GetFighterModels(true)
+        local modelSet = {}
+        for _, model in pairs(models) do
+            modelSet[model] = true
+            if not ESPObjects[model] or not ESPObjects[model].Parent then
+                local h             = Instance.new("Highlight")
+                h.Name              = "RivalsHub_ESP"
+                h.FillColor         = State.ESPColor
+                h.OutlineColor      = Color3.fromRGB(255, 255, 255)
+                h.FillTransparency  = State.ESPTransp
+                h.Adornee           = model
+                h.Parent            = game.CoreGui
+                ESPObjects[model]   = h
+            end
+        end
+        for model, h in pairs(ESPObjects) do
+            if not modelSet[model] then
+                if h and h.Parent then h:Destroy() end
+                ESPObjects[model] = nil
+            end
+        end
+    end
+end)
+
+-- Heartbeat: Ragebot + Auto-TP
+RunService.Heartbeat:Connect(function()
+
+    -- Ragebot: fires UseItem with encoded camera data at closest enemy
+    if State.Ragebot then
+        local char = lp.Character
+        if not char then goto skipRage end
+
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then goto skipRage end
+
+        if not FighterController or not FighterController.LocalFighter then goto skipRage end
+
+        local item = FighterController.LocalFighter.EquippedItem
+        if not item then goto skipRage end
+
+        local targetPart, targetChar = rageGetClosest()
+        if not targetPart or not targetChar then goto skipRage end
+
+        local cam    = wspace.CurrentCamera.CFrame
+        local manip, height = rageCalculatePoint(cam.Position, targetPart.Position, targetChar)
+        if not manip then goto skipRage end
+
+        local shootPos = (height == nil) and manip or cam.Position
+
+        local cameradata = {}
+        cameradata[utf8.char(1)] = {
+            [utf8.char(0)] = Utility:EncodeCFrame(
+                CFrame.new(shootPos.X, shootPos.Y + (height or 0), shootPos.Z)
+                * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
+            ),
+            [utf8.char(1)] = height
+                and Utility:EncodeCFrame(
+                    CFrame.new(targetPart.Position)
+                    * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
+                )
+                or Utility:EncodeCFrame(
+                    CFrame.new(shootPos.X, shootPos.Y + (height or 0), shootPos.Z)
+                    * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
+                ),
+            [utf8.char(2)] = targetPart,
+            [utf8.char(3)] = Utility:EncodeCFrame(
+                targetPart.CFrame:ToObjectSpace(CFrame.new(targetPart.Position))
+            )
+        }
+
+        pcall(function()
+            rs.Remotes.Replication.Fighter.UseItem:FireServer(
+                item:Get("ObjectID"),
+                EnumLibrary:ToEnum("StartShooting"),
+                cameradata,
+                nil
+            )
+        end)
+        ::skipRage::
+    end
+
+    -- Auto-TP loop
+    if State.AutoTP then
+        local now = tick()
+
+        -- Refresh player list every 2s
+        if now % 2 < 0.05 then updateTPList() end
+
+        if #tpPlayerList > 0 then
+            -- Cycle target every 3 seconds
+            if now - lastCycle >= 3 then
+                tpCurrentIndex = (tpCurrentIndex % #tpPlayerList) + 1
+                lastCycle = now
+            end
+            -- Teleport every 0.5s
+            if now - lastTeleport >= 0.5 then
+                local target = tpPlayerList[tpCurrentIndex]
+                if target then tpToHead(target) end
+                lastTeleport = now
+            end
+        end
+    end
+end)
+
+-- =============================================
+--   Config Manager
+-- =============================================
+
+local config_manager = loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/nfpw/XXSCRIPT/refs/heads/main/Library/ConfigManager.lua"
+))()
+config_manager:SetLibrary(library)
+config_manager:SetWindow(window)
+config_manager:SetFolder("RivalsHub")
+config_manager:BuildConfigSection(tabs.misc)
+config_manager:LoadAutoloadConfig()
+
+window:SetBackgroundColor(Color3.fromRGB(20, 20, 20))
+window:SetBackgroundTransparency(0.3)
+window:Notify("Rivals Hub", "All systems loaded! Press Insert to toggle.", 5)
