@@ -1,13 +1,10 @@
 -- =============================================
---   Rivals Hub v2
+--   Rivals Hub v3
 --   UI: XXSCRIPT by @nfpw
---   Features: Aimbot, Silent Aim, Ragebot,
---             ESP, Skin Changer, Auto-TP,
---             Anti-Cheat Bypass
 -- =============================================
 
 -- =============================================
---   Services (no player:GetMouse() ever used)
+--   Services
 -- =============================================
 
 local Players           = game:GetService("Players")
@@ -16,81 +13,70 @@ local ReplicatedFirst   = game:GetService("ReplicatedFirst")
 local RunService        = game:GetService("RunService")
 local UserInputService  = game:GetService("UserInputService")
 local HttpService       = game:GetService("HttpService")
+local CoreGui           = game:GetService("CoreGui")
 
-local lp             = Players.LocalPlayer
-local playerScripts  = lp.PlayerScripts
-local controllers    = playerScripts.Controllers
+local lp            = Players.LocalPlayer
+local playerScripts = lp.PlayerScripts
+local controllers   = playerScripts.Controllers
+local Camera        = workspace.CurrentCamera
 
--- cloneref safety wrapper (some executors may not have it)
-local function safeClone(obj) return (cloneref and cloneref(obj)) or obj end
-local rs      = safeClone(ReplicatedStorage)
-local wspace  = safeClone(workspace)
-local plrs    = safeClone(Players)
+local function safeClone(obj)
+    return (cloneref and cloneref(obj)) or obj
+end
+
+local rs     = safeClone(ReplicatedStorage)
+local wspace = safeClone(workspace)
+local plrs   = safeClone(Players)
+
+local function getHUI()
+    if gethui then return gethui() end
+    return CoreGui
+end
 
 -- =============================================
---   Require Controllers & Modules
+--   Require Controllers
 -- =============================================
 
-local CameraController = require(controllers.CameraController)
+local CameraController  = require(controllers.CameraController)
 local FighterController = require(controllers.FighterController)
-local Utility      = require(rs.Modules.Utility)
-local EnumLibrary  = require(rs.Modules.EnumLibrary)
-local ItemLibrary  = require(rs.Modules.ItemLibrary)
-local DataController = require(controllers.PlayerDataController)
+local Utility           = require(rs.Modules.Utility)
+local EnumLibrary       = require(rs.Modules.EnumLibrary)
+local ItemLibrary       = require(rs.Modules.ItemLibrary)
+local DataController    = require(controllers.PlayerDataController)
 
 local CosmeticLibrary
 pcall(function() CosmeticLibrary = require(rs.Modules.CosmeticLibrary) end)
 
 -- =============================================
---   ANTI-CHEAT BYPASS (runs immediately)
+--   ANTI-CHEAT BYPASS
 -- =============================================
 
 task.spawn(function()
-    -- Rename services to confuse string-based AC checks
-    for _, svc in pairs({Players, wspace, ReplicatedStorage, ReplicatedFirst}) do
+    for _, svc in pairs({wspace, rs, ReplicatedFirst}) do
         pcall(function() svc.Name = svc.Name .. " " end)
     end
-
-    -- Detect and neutralize game:Kick() hooks
     coroutine.wrap(function()
-        while task.wait(1) do
-            local ok = pcall(function() return game:Kick() end)
-            if ok then
-                -- hook detected; script continues normally
-            end
-        end
+        while task.wait(1) do pcall(function() return game:Kick() end) end
     end)()
-
-    -- Server ping spoofer
     task.spawn(function()
         local ServerPing = wspace:WaitForChild("ServerPing", 10)
         if not ServerPing then return end
         while task.wait(12 * math.random()) do
             local rnd   = math.random(1, 9999)
-            local value = (rnd == 6961 and 2137)
-                       or (rnd == ServerPing.Value and 2138)
-                       or rnd
-            pcall(function()
-                ReplicatedStorage.Remotes.Ping:FireServer(value)
-            end)
+            local value = (rnd == 6961 and 2137) or (rnd == ServerPing.Value and 2138) or rnd
+            pcall(function() rs.Remotes.Ping:FireServer(value) end)
         end
     end)
-
-    -- Mouse reference detector bypass:
-    -- We NEVER call player:GetMouse() in this script.
-    -- All mouse data is obtained via UserInputService:GetMouseLocation()
 end)
 
 -- =============================================
---   SKIN CHANGER HOOKS (runs immediately)
+--   SKIN CHANGER HOOKS
 -- =============================================
 
-local equipped  = {}
-local favorites = {}
-local constructingWeapon = nil
-local viewingProfile     = nil
-local lastUsedWeapon     = nil
-local saveFile = "RivalsHub/cosmetics.json"
+local equipped       = {}
+local favorites      = {}
+local lastUsedWeapon = nil
+local saveFile       = "RivalsHub/cosmetics.json"
 
 local function cloneCosmetic(name, cosmeticType, options)
     if not CosmeticLibrary then return nil end
@@ -98,15 +84,15 @@ local function cloneCosmetic(name, cosmeticType, options)
     if not base then return nil end
     local data = {}
     for k, v in pairs(base) do data[k] = v end
-    data.Name   = name
-    data.Type   = data.Type or cosmeticType
-    data.Seed   = data.Seed or math.random(1, 1000000)
+    data.Name = name
+    data.Type = data.Type or cosmeticType
+    data.Seed = data.Seed or math.random(1, 1000000)
     if EnumLibrary then
         local ok, enumId = pcall(EnumLibrary.ToEnum, EnumLibrary, name)
         if ok and enumId then data.Enum = enumId; data.ObjectID = data.ObjectID or enumId end
     end
     if options then
-        if options.inverted     ~= nil then data.Inverted        = options.inverted end
+        if options.inverted      ~= nil then data.Inverted         = options.inverted end
         if options.favoritesOnly ~= nil then data.OnlyUseFavorites = options.favoritesOnly end
     end
     return data
@@ -148,19 +134,17 @@ local function loadConfig()
     end)
 end
 
--- Make all cosmetics appear owned
 if CosmeticLibrary then
-    CosmeticLibrary.OwnsCosmeticNormally     = function() return true end
-    CosmeticLibrary.OwnsCosmeticUniversally  = function() return true end
-    CosmeticLibrary.OwnsCosmeticForWeapon    = function() return true end
+    CosmeticLibrary.OwnsCosmeticNormally    = function() return true end
+    CosmeticLibrary.OwnsCosmeticUniversally = function() return true end
+    CosmeticLibrary.OwnsCosmeticForWeapon   = function() return true end
     local origOwns = CosmeticLibrary.OwnsCosmetic
-    CosmeticLibrary.OwnsCosmetic = function(self, inventory, name, weapon)
-        if name and name:find("MISSING_") then return origOwns(self, inventory, name, weapon) end
+    CosmeticLibrary.OwnsCosmetic = function(self, inv, name, weapon)
+        if name and name:find("MISSING_") then return origOwns(self, inv, name, weapon) end
         return true
     end
 end
 
--- Hook DataController to inject owned cosmetics
 local origGet = DataController.Get
 DataController.Get = function(self, key)
     local data = origGet(self, key)
@@ -193,77 +177,6 @@ DataController.GetWeaponData = function(self, weaponName)
     return merged
 end
 
--- Hook equip/favorite remotes
-if hookmetamethod then
-    local remotes         = ReplicatedStorage:FindFirstChild("Remotes")
-    local dataRemotes     = remotes and remotes:FindFirstChild("Data")
-    local equipRemote     = dataRemotes and dataRemotes:FindFirstChild("EquipCosmetic")
-    local favoriteRemote  = dataRemotes and dataRemotes:FindFirstChild("FavoriteCosmetic")
-    local repRemotes      = remotes and remotes:FindFirstChild("Replication")
-    local fighterRemotes  = repRemotes and repRemotes:FindFirstChild("Fighter")
-    local useItemRemote   = fighterRemotes and fighterRemotes:FindFirstChild("UseItem")
-
-    if equipRemote then
-        local oldNamecall2
-        oldNamecall2 = hookmetamethod(game, "__namecall", function(self, ...)
-            if getnamecallmethod() ~= "FireServer" then return oldNamecall2(self, ...) end
-            local args = { ... }
-
-            -- Track last used weapon for finisher detection
-            if useItemRemote and self == useItemRemote then
-                local objectID = args[1]
-                if FighterController then
-                    pcall(function()
-                        local fighter = FighterController:GetFighter(lp)
-                        if fighter and fighter.Items then
-                            for _, item in pairs(fighter.Items) do
-                                if item:Get("ObjectID") == objectID then
-                                    lastUsedWeapon = item.Name; break
-                                end
-                            end
-                        end
-                    end)
-                end
-            end
-
-            if self == equipRemote then
-                local weaponName, cosType, cosName, options = args[1], args[2], args[3], args[4] or {}
-                if cosName and cosName ~= "None" and cosName ~= "" then
-                    local inv = DataController:Get("CosmeticInventory")
-                    if inv and rawget(inv, cosName) then return oldNamecall2(self, ...) end
-                end
-                equipped[weaponName] = equipped[weaponName] or {}
-                if not cosName or cosName == "None" or cosName == "" then
-                    equipped[weaponName][cosType] = nil
-                    if not next(equipped[weaponName]) then equipped[weaponName] = nil end
-                else
-                    local cloned = cloneCosmetic(cosName, cosType, {
-                        inverted = options.IsInverted, favoritesOnly = options.OnlyUseFavorites
-                    })
-                    if cloned then equipped[weaponName][cosType] = cloned end
-                end
-                task.defer(function()
-                    pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end)
-                    task.wait(0.2); saveConfig()
-                end)
-                return
-            end
-
-            if self == favoriteRemote then
-                favorites[args[1]] = favorites[args[1]] or {}
-                favorites[args[1]][args[2]] = args[3] or nil
-                saveConfig()
-                task.spawn(function()
-                    pcall(function() DataController.CurrentData:Replicate("FavoritedCosmetics") end)
-                end)
-                return
-            end
-
-            return oldNamecall2(self, ...)
-        end)
-    end
-end
-
 loadConfig()
 
 -- =============================================
@@ -271,30 +184,84 @@ loadConfig()
 -- =============================================
 
 local State = {
-    -- Aimbot
-    Aimbot       = false,
-    AimbotFOV    = 180,
-    AimbotSmooth = false,
-    AimbotSpeed  = 8,
-    AimbotPart   = "Head",
-    SilentAim    = false,
-
-    -- Ragebot
-    Ragebot      = false,
-
-    -- ESP
-    ESP          = false,
-    ESPColor     = Color3.fromRGB(255, 60, 60),
-    ESPTransp    = 0.5,
-
-    -- Auto TP
-    AutoTP       = false,
+    Aimbot        = false,
+    AimbotFOV     = 180,
+    AimbotSmooth  = false,
+    AimbotSpeed   = 8,
+    AimbotPart    = "Head",
+    SilentAim     = false,
+    SilentFOV     = 150,
+    SilentMaxDist = 200,
+    Ragebot       = false,
+    ESP           = false,
+    ESPColor      = Color3.fromRGB(255, 60, 60),
+    ESPTransp     = 0.5,
+    AutoTP        = false,
 }
 
 local ESPObjects = {}
 
 -- =============================================
---   AIMBOT / ESP HELPERS
+--   SILENT AIM — Hooks Utility.Raycast directly
+--   Much more accurate than FireServer hooking.
+--   Also draws FOV circle (red = locked, blue = free)
+-- =============================================
+
+-- FOV circle drawing
+local fovCircle = Drawing.new("Circle")
+fovCircle.Thickness = 1.5
+fovCircle.Filled    = false
+fovCircle.NumSides  = 64
+fovCircle.Visible   = false -- shown only when silent aim is ON
+
+local function getSilentTarget(origin)
+    local center   = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local best, bestDist = nil, math.huge
+    local myChar   = lp.Character
+
+    for _, p in pairs(Players:GetPlayers()) do
+        if p == lp then continue end
+        local char = p.Character
+        if not char or char == myChar then continue end
+        local head = char:FindFirstChild("Head")
+        local hum  = char:FindFirstChildOfClass("Humanoid")
+        if not head or not hum or hum.Health <= 0 then continue end
+        if (origin - head.Position).Magnitude > State.SilentMaxDist then continue end
+        local sp, vis = Camera:WorldToViewportPoint(head.Position)
+        if not vis then continue end
+        local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+        if d < State.SilentFOV and d < bestDist then
+            bestDist = d
+            best     = head
+        end
+    end
+    return best
+end
+
+-- Hook Utility.Raycast — redirect ray to enemy head when target found
+local origRaycast = Utility.Raycast
+Utility.Raycast = function(self, origin, direction, distance, ...)
+    if State.SilentAim then
+        local target = getSilentTarget(origin)
+        if target then
+            return origRaycast(self, origin, target.Position, distance, ...)
+        end
+    end
+    return origRaycast(self, origin, direction, distance, ...)
+end
+
+-- Hook Utility.PlayParticles — suppress flash/smoke/blind effects
+local origParticles = Utility.PlayParticles
+Utility.PlayParticles = function(self, obj)
+    if State.SilentAim and typeof(obj) == "Instance" then
+        local n = obj.Name:lower()
+        if n:find("flash") or n:find("smoke") or n:find("blind") then return end
+    end
+    return origParticles(self, obj)
+end
+
+-- =============================================
+--   AIMBOT HELPERS (screen-center FOV)
 -- =============================================
 
 local function isAliveModel(model)
@@ -303,40 +270,22 @@ local function isAliveModel(model)
     return h ~= nil and h.Health > 0
 end
 
-local function getTargetPart(model, partName)
-    return model:FindFirstChild(partName or State.AimbotPart)
-        or model:FindFirstChild("HumanoidRootPart")
-end
-
--- Uses UserInputService:GetMouseLocation() — never player:GetMouse()
 local function getClosestToMouse(fovDegrees)
     local mousePos = UserInputService:GetMouseLocation()
     local cam      = wspace.CurrentCamera
-
     local bestPart = nil
     local bestDist = math.huge
     local models   = FighterController:GetFighterModels(true)
-
     for _, model in pairs(models) do
         if not isAliveModel(model) then continue end
-        local part = getTargetPart(model)
+        local part = model:FindFirstChild(State.AimbotPart) or model:FindFirstChild("HumanoidRootPart")
         if not part then continue end
-
-        -- Project world pos to screen
         local screenPos, onScreen = cam:WorldToScreenPoint(part.Position)
         if not onScreen then continue end
-
-        local screenVec = Vector2.new(screenPos.X, screenPos.Y)
-        local dist      = (screenVec - mousePos).Magnitude
-
-        -- Convert FOV degrees to screen radius estimate
+        local dist      = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
         local fovRadius = (fovDegrees / 180) * math.min(cam.ViewportSize.X, cam.ViewportSize.Y) / 2
-        if dist < fovRadius and dist < bestDist then
-            bestDist = dist
-            bestPart = part
-        end
+        if dist < fovRadius and dist < bestDist then bestDist = dist; bestPart = part end
     end
-
     return bestPart
 end
 
@@ -345,10 +294,10 @@ end
 -- =============================================
 
 local ray_params = RaycastParams.new()
-local vec = Vector3.new
+local vec        = Vector3.new
 local rageOffsets = {
     vec(0,12,0), vec(0,16,0), vec(0,20,0), vec(0,24,0),
-    vec(0,28,0), vec(0,32,0), vec(0,36,0), vec(0,40,0)
+    vec(0,28,0), vec(0,32,0), vec(0,36,0), vec(0,40,0),
 }
 
 local function rageGetClosest()
@@ -358,9 +307,7 @@ local function rageGetClosest()
     for _, v in next, plrs:GetPlayers() do
         if v ~= lp and v.Character and v.Character:FindFirstChild("Head") then
             local mag = (char.HumanoidRootPart.Position - v.Character.Head.Position).Magnitude
-            if mag < dist then
-                dist = mag; target = v.Character.Head; targetChar = v.Character
-            end
+            if mag < dist then dist = mag; target = v.Character.Head; targetChar = v.Character end
         end
     end
     return target, targetChar
@@ -369,9 +316,7 @@ end
 local function rageCalculatePoint(origin, targetPos, targetChar)
     ray_params.FilterDescendantsInstances = { lp.Character, targetChar }
     ray_params.FilterType = Enum.RaycastFilterType.Exclude
-    if not wspace:Raycast(origin, targetPos - origin, ray_params) then
-        return origin, nil
-    end
+    if not wspace:Raycast(origin, targetPos - origin, ray_params) then return origin, nil end
     for _, offset in next, rageOffsets do
         local scanPos = origin + offset
         if not wspace:Raycast(scanPos, targetPos - scanPos, ray_params) then
@@ -382,7 +327,7 @@ local function rageCalculatePoint(origin, targetPos, targetChar)
 end
 
 -- =============================================
---   AUTO-TP STATE
+--   AUTO-TP
 -- =============================================
 
 local tpPlayerList   = {}
@@ -410,6 +355,75 @@ end
 updateTPList()
 
 -- =============================================
+--   SINGLE __namecall HOOK
+--   (skin changer only — silent aim now hooks Utility.Raycast)
+-- =============================================
+
+local remotes        = ReplicatedStorage:FindFirstChild("Remotes")
+local dataRemotes    = remotes and remotes:FindFirstChild("Data")
+local equipRemote    = dataRemotes and dataRemotes:FindFirstChild("EquipCosmetic")
+local favoriteRemote = dataRemotes and dataRemotes:FindFirstChild("FavoriteCosmetic")
+local repRemotes     = remotes and remotes:FindFirstChild("Replication")
+local fighterRemotes = repRemotes and repRemotes:FindFirstChild("Fighter")
+local useItemRemote  = fighterRemotes and fighterRemotes:FindFirstChild("UseItem")
+
+if hookmetamethod then
+    local origNamecall
+    origNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        if method ~= "FireServer" then return origNamecall(self, ...) end
+        local args = { ... }
+
+        if useItemRemote and self == useItemRemote then
+            local objectID = args[1]
+            pcall(function()
+                local fighter = FighterController:GetFighter(lp)
+                if fighter and fighter.Items then
+                    for _, item in pairs(fighter.Items) do
+                        if item:Get("ObjectID") == objectID then lastUsedWeapon = item.Name; break end
+                    end
+                end
+            end)
+        end
+
+        if equipRemote and self == equipRemote then
+            local weaponName, cosType, cosName, options = args[1], args[2], args[3], args[4] or {}
+            if cosName and cosName ~= "None" and cosName ~= "" then
+                local inv = DataController:Get("CosmeticInventory")
+                if inv and rawget(inv, cosName) then return origNamecall(self, ...) end
+            end
+            equipped[weaponName] = equipped[weaponName] or {}
+            if not cosName or cosName == "None" or cosName == "" then
+                equipped[weaponName][cosType] = nil
+                if not next(equipped[weaponName]) then equipped[weaponName] = nil end
+            else
+                local cloned = cloneCosmetic(cosName, cosType, {
+                    inverted = options.IsInverted, favoritesOnly = options.OnlyUseFavorites
+                })
+                if cloned then equipped[weaponName][cosType] = cloned end
+            end
+            task.defer(function()
+                pcall(function() DataController.CurrentData:Replicate("WeaponInventory") end)
+                task.wait(0.2); saveConfig()
+            end)
+            return
+        end
+
+        if favoriteRemote and self == favoriteRemote then
+            favorites[args[1]] = favorites[args[1]] or {}
+            favorites[args[1]][args[2]] = args[3] or nil
+            saveConfig()
+            task.spawn(function()
+                pcall(function() DataController.CurrentData:Replicate("FavoritedCosmetics") end)
+            end)
+            return
+        end
+
+        return origNamecall(self, ...)
+    end)
+end
+
+-- =============================================
 --   UI SETUP
 -- =============================================
 
@@ -428,15 +442,15 @@ local gui_config = {
 local library = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/nfpw/XXSCRIPT/refs/heads/main/Library/Module.lua"
 ))()
-local window = library:CreateWindow(gui_config, gethui())
+local window = library:CreateWindow(gui_config, getHUI())
 library:SetWindowName("Rivals Hub")
 
 local tabs = {
-    aimbot   = window:CreateTab("Aimbot"),
-    ragebot  = window:CreateTab("Ragebot"),
-    visuals  = window:CreateTab("Visuals"),
-    player   = window:CreateTab("Player"),
-    misc     = window:CreateTab("Misc"),
+    aimbot  = window:CreateTab("Aimbot"),
+    ragebot = window:CreateTab("Ragebot"),
+    visuals = window:CreateTab("Visuals"),
+    player  = window:CreateTab("Player"),
+    misc    = window:CreateTab("Misc"),
 }
 
 -- =============================================
@@ -444,112 +458,85 @@ local tabs = {
 -- =============================================
 
 local s_aim = tabs.aimbot:CreateSection("Aimbot")
-
 s_aim:CreateToggle("Aimbot", false, function(v) State.Aimbot = v end)
-
-s_aim:CreateSlider("FOV (degrees)", 5, 360, 180, true, function(v)
-    State.AimbotFOV = v
-end)
-
+s_aim:CreateSlider("FOV (degrees)", 5, 360, 180, true, function(v) State.AimbotFOV = v end)
 s_aim:CreateToggle("Smooth Aim", false, function(v) State.AimbotSmooth = v end)
-
-s_aim:CreateSlider("Smooth Speed", 1, 20, 8, true, function(v)
-    State.AimbotSpeed = v
-end)
-
-s_aim:CreateDropdown("Target Part", {"Head", "HumanoidRootPart"}, function(v)
+s_aim:CreateSlider("Smooth Speed", 1, 20, 8, true, function(v) State.AimbotSpeed = v end)
+s_aim:CreateDropdown("Target Part", {"Head","HumanoidRootPart"}, function(v)
     State.AimbotPart = v
 end, "Head", false)
 
 local s_silent = tabs.aimbot:CreateSection("Silent Aim")
-
-s_silent:CreateToggle("Silent Aim", false, function(v) State.SilentAim = v end)
-s_silent:CreateLabel("Redirects shot data to nearest enemy without moving camera.", true)
+s_silent:CreateLabel(
+    "Hooks Utility.Raycast to redirect bullets to the nearest head. "..
+    "FOV circle shows the detection area.", true
+)
+s_silent:CreateToggle("Silent Aim", false, function(v)
+    State.SilentAim    = v
+    fovCircle.Visible  = v
+end)
+s_silent:CreateSlider("FOV Radius (px)", 10, 400, 150, true, function(v)
+    State.SilentFOV = v
+end)
+s_silent:CreateSlider("Max Distance (studs)", 20, 500, 200, true, function(v)
+    State.SilentMaxDist = v
+end)
 
 -- =============================================
 --   RAGEBOT TAB
---   Uses UseItem remote with encoded camera data
---   No silent aim here — ragebot IS the aim
 -- =============================================
 
 local s_rage = tabs.ragebot:CreateSection("Ragebot")
-
 s_rage:CreateToggle("Ragebot", false, function(v)
     State.Ragebot = v
-    if v then State.Aimbot = false end -- avoid conflict
+    if v then State.Aimbot = false end
 end)
-
 s_rage:CreateLabel(
-    "Fires at closest enemy every frame through the UseItem remote. "..
-    "Calculates unobstructed shoot angles automatically.",
-    true
+    "Fires UseItem at closest enemy every frame. "..
+    "Calculates unobstructed angles automatically.", true
 )
 
 -- =============================================
---   VISUALS TAB — ESP + Skin Changer
+--   VISUALS TAB
 -- =============================================
 
 local s_esp = tabs.visuals:CreateSection("Player ESP")
-
 s_esp:CreateToggle("Player ESP", false, function(v)
     State.ESP = v
     if not v then
-        for model, h in pairs(ESPObjects) do
-            if h and h.Parent then h:Destroy() end
-        end
+        for _, h in pairs(ESPObjects) do if h and h.Parent then h:Destroy() end end
         ESPObjects = {}
     end
 end)
-
 s_esp:CreateColorpicker("ESP Color", function(color, _)
     State.ESPColor = color
-    for _, h in pairs(ESPObjects) do
-        if h and h.Parent then h.FillColor = color end
-    end
+    for _, h in pairs(ESPObjects) do if h and h.Parent then h.FillColor = color end end
 end, false, false)
-
-s_esp:CreateSlider("Fill Transparency", 0, 9, 5, true, function(v)
+s_esp:CreateSlider("Transparency", 0, 9, 5, true, function(v)
     State.ESPTransp = v / 10
-    for _, h in pairs(ESPObjects) do
-        if h and h.Parent then h.FillTransparency = State.ESPTransp end
-    end
+    for _, h in pairs(ESPObjects) do if h and h.Parent then h.FillTransparency = State.ESPTransp end end
 end)
 
--- Skin Changer
 local s_skin = tabs.visuals:CreateSection("Skin Changer")
+s_skin:CreateLabel("All cosmetics auto-unlocked. Enter details below to equip.", true)
 
-s_skin:CreateLabel(
-    "All cosmetics are automatically unlocked. "..
-    "Enter weapon name + cosmetic type + cosmetic name to equip.",
-    true
-)
+local skinWeaponInput  = ""
+local skinCosTypeInput = "Skin"
+local skinCosNameInput = ""
 
-local skinWeaponInput    = ""
-local skinCosTypeInput   = "Skin"
-local skinCosNameInput   = ""
-
-s_skin:CreateTextBox("Weapon Name", "e.g. Assault Rifle", false, function(v)
-    skinWeaponInput = v
-end)
-
-s_skin:CreateDropdown("Cosmetic Type", {"Skin", "Wrap", "Charm", "Finisher"}, function(v)
+s_skin:CreateTextBox("Weapon Name", "e.g. Assault Rifle", false, function(v) skinWeaponInput = v end)
+s_skin:CreateDropdown("Cosmetic Type", {"Skin","Wrap","Charm","Finisher"}, function(v)
     skinCosTypeInput = v
 end, "Skin", false)
-
 s_skin:CreateTextBox("Cosmetic Name", "e.g. Glorious Assault Rifle", false, function(v)
     skinCosNameInput = v
 end)
-
 s_skin:CreateButton("Apply Cosmetic", function()
     if skinWeaponInput == "" or skinCosNameInput == "" then
-        window:Notify("Error", "Fill in weapon and cosmetic name!", 3)
-        return
+        window:Notify("Error", "Fill in weapon + cosmetic name!", 3); return
     end
     local cloned = cloneCosmetic(skinCosNameInput, skinCosTypeInput, {})
-    if not cloned then
-        window:Notify("Error", "Cosmetic not found: " .. skinCosNameInput, 4)
-        return
-    end
+    if not cloned then window:Notify("Error", "Not found: " .. skinCosNameInput, 4); return end
     equipped[skinWeaponInput] = equipped[skinWeaponInput] or {}
     equipped[skinWeaponInput][skinCosTypeInput] = cloned
     task.defer(function()
@@ -558,11 +545,8 @@ s_skin:CreateButton("Apply Cosmetic", function()
     end)
     window:Notify("Applied!", skinCosNameInput .. " → " .. skinWeaponInput, 4)
 end)
-
 s_skin:CreateButton("Remove Cosmetic", function()
-    if skinWeaponInput == "" then
-        window:Notify("Error", "Enter a weapon name first!", 3); return
-    end
+    if skinWeaponInput == "" then window:Notify("Error", "Enter weapon name!", 3); return end
     if equipped[skinWeaponInput] then
         equipped[skinWeaponInput][skinCosTypeInput] = nil
         if not next(equipped[skinWeaponInput]) then equipped[skinWeaponInput] = nil end
@@ -575,59 +559,35 @@ s_skin:CreateButton("Remove Cosmetic", function()
 end)
 
 -- =============================================
---   PLAYER TAB — Auto TP (mobile-friendly)
---   No keybinds — all UI buttons
+--   PLAYER TAB — Auto TP (no keybinds, mobile safe)
 -- =============================================
 
-local s_tp = tabs.player:CreateSection("Auto TP to Player")
-
-s_tp:CreateLabel("Teleports to the nearest player's head every 0.5s.", true)
-
+local s_tp = tabs.player:CreateSection("Auto TP to Player Head")
+s_tp:CreateLabel("Teleports to target player's head every 0.5s.", true)
 s_tp:CreateToggle("Enable Auto-TP", false, function(v)
     State.AutoTP = v
-    if v then
-        updateTPList()
-        tpCurrentIndex = 1
-        lastTeleport = tick()
-        lastCycle    = tick()
-    end
+    if v then updateTPList(); tpCurrentIndex = 1; lastTeleport = tick(); lastCycle = tick() end
 end)
-
 s_tp:CreateButton("Next Player", function()
     updateTPList()
-    if #tpPlayerList == 0 then
-        window:Notify("No Players", "No other players found!", 3); return
-    end
+    if #tpPlayerList == 0 then window:Notify("No Players", "None found!", 3); return end
     tpCurrentIndex = (tpCurrentIndex % #tpPlayerList) + 1
-    local target = tpPlayerList[tpCurrentIndex]
-    if target then
-        tpToHead(target)
-        window:Notify("Targeting", target.Name, 2)
-    end
+    local t = tpPlayerList[tpCurrentIndex]
+    if t then tpToHead(t); window:Notify("Targeting", t.Name, 2) end
 end)
-
 s_tp:CreateButton("Previous Player", function()
     updateTPList()
     if #tpPlayerList == 0 then return end
     tpCurrentIndex = tpCurrentIndex - 1
     if tpCurrentIndex < 1 then tpCurrentIndex = #tpPlayerList end
-    local target = tpPlayerList[tpCurrentIndex]
-    if target then
-        tpToHead(target)
-        window:Notify("Targeting", target.Name, 2)
-    end
+    local t = tpPlayerList[tpCurrentIndex]
+    if t then tpToHead(t); window:Notify("Targeting", t.Name, 2) end
 end)
-
 s_tp:CreateButton("Teleport Now", function()
     updateTPList()
-    if #tpPlayerList == 0 then
-        window:Notify("No Players", "No other players found!", 3); return
-    end
-    local target = tpPlayerList[tpCurrentIndex] or tpPlayerList[1]
-    if target then
-        tpToHead(target)
-        window:Notify("Teleported", "→ " .. target.Name, 2)
-    end
+    if #tpPlayerList == 0 then window:Notify("No Players", "None found!", 3); return end
+    local t = tpPlayerList[tpCurrentIndex] or tpPlayerList[1]
+    if t then tpToHead(t); window:Notify("Teleported", "→ " .. t.Name, 2) end
 end)
 
 -- =============================================
@@ -646,42 +606,25 @@ s_misc:CreateButton("Copy My Position", function()
 end)
 
 -- =============================================
---   SILENT AIM HOOK
--- =============================================
-
-local origNamecall
-origNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-    local method = getnamecallmethod()
-    if State.SilentAim and method == "FireServer" then
-        local args   = { ... }
-        local target = getClosestToMouse(360)
-        if target then
-            local camPos = wspace.CurrentCamera.CFrame.Position
-            local lookCF = CFrame.lookAt(camPos, target.Position)
-            local replaced = false
-            for i, arg in ipairs(args) do
-                if typeof(arg) == "Instance" and arg:IsA("BasePart") then
-                    args[i] = target; replaced = true
-                elseif typeof(arg) == "Vector3" and arg.Magnitude > 5 then
-                    args[i] = target.Position; replaced = true
-                elseif typeof(arg) == "CFrame" and arg.Position.Magnitude > 5 then
-                    args[i] = lookCF; replaced = true
-                end
-            end
-            if replaced then return self:FireServer(unpack(args)) end
-        end
-    end
-    return origNamecall(self, ...)
-end)
-
--- =============================================
 --   MAIN LOOPS
 -- =============================================
 
--- RenderStepped: Aimbot + ESP
 RunService.RenderStepped:Connect(function(dt)
 
-    -- Aimbot (mouse-relative FOV, no player:GetMouse())
+    -- FOV circle update (silent aim)
+    if State.SilentAim then
+        local center = Camera.ViewportSize / 2
+        fovCircle.Position = Vector2.new(center.X, center.Y)
+        fovCircle.Radius   = State.SilentFOV
+        local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        local origin = myRoot and myRoot.Position or Camera.CFrame.Position
+        local hasTarget = getSilentTarget(origin) ~= nil
+        fovCircle.Color = hasTarget
+            and Color3.fromRGB(255, 50, 50)   -- red  = target locked
+            or  Color3.fromRGB(0, 200, 255)   -- blue = searching
+    end
+
+    -- Aimbot
     if State.Aimbot and not State.Ragebot then
         local target = getClosestToMouse(State.AimbotFOV)
         if target then
@@ -708,14 +651,13 @@ RunService.RenderStepped:Connect(function(dt)
         for _, model in pairs(models) do
             modelSet[model] = true
             if not ESPObjects[model] or not ESPObjects[model].Parent then
-                local h             = Instance.new("Highlight")
-                h.Name              = "RivalsHub_ESP"
-                h.FillColor         = State.ESPColor
-                h.OutlineColor      = Color3.fromRGB(255, 255, 255)
-                h.FillTransparency  = State.ESPTransp
-                h.Adornee           = model
-                h.Parent            = game.CoreGui
-                ESPObjects[model]   = h
+                local h            = Instance.new("Highlight")
+                h.FillColor        = State.ESPColor
+                h.OutlineColor     = Color3.fromRGB(255, 255, 255)
+                h.FillTransparency = State.ESPTransp
+                h.Adornee          = model
+                h.Parent           = CoreGui
+                ESPObjects[model]  = h
             end
         end
         for model, h in pairs(ESPObjects) do
@@ -727,53 +669,44 @@ RunService.RenderStepped:Connect(function(dt)
     end
 end)
 
--- Heartbeat: Ragebot + Auto-TP
 RunService.Heartbeat:Connect(function()
 
-    -- Ragebot: fires UseItem with encoded camera data at closest enemy
+    -- Ragebot
     if State.Ragebot then
-        local char = lp.Character
-        if not char then goto skipRage end
-
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then goto skipRage end
-
-        if not FighterController or not FighterController.LocalFighter then goto skipRage end
-
-        local item = FighterController.LocalFighter.EquippedItem
-        if not item then goto skipRage end
-
-        local targetPart, targetChar = rageGetClosest()
-        if not targetPart or not targetChar then goto skipRage end
-
-        local cam    = wspace.CurrentCamera.CFrame
-        local manip, height = rageCalculatePoint(cam.Position, targetPart.Position, targetChar)
-        if not manip then goto skipRage end
-
-        local shootPos = (height == nil) and manip or cam.Position
-
-        local cameradata = {}
-        cameradata[utf8.char(1)] = {
-            [utf8.char(0)] = Utility:EncodeCFrame(
-                CFrame.new(shootPos.X, shootPos.Y + (height or 0), shootPos.Z)
-                * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
-            ),
-            [utf8.char(1)] = height
-                and Utility:EncodeCFrame(
-                    CFrame.new(targetPart.Position)
-                    * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
-                )
-                or Utility:EncodeCFrame(
+        pcall(function()
+            local char = lp.Character
+            if not char then return end
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if not root then return end
+            if not FighterController or not FighterController.LocalFighter then return end
+            local item = FighterController.LocalFighter.EquippedItem
+            if not item then return end
+            local targetPart, targetChar = rageGetClosest()
+            if not targetPart or not targetChar then return end
+            local cam = wspace.CurrentCamera.CFrame
+            local manip, height = rageCalculatePoint(cam.Position, targetPart.Position, targetChar)
+            if not manip then return end
+            local shootPos = (height == nil) and manip or cam.Position
+            local cameradata = {}
+            cameradata[utf8.char(1)] = {
+                [utf8.char(0)] = Utility:EncodeCFrame(
                     CFrame.new(shootPos.X, shootPos.Y + (height or 0), shootPos.Z)
                     * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
                 ),
-            [utf8.char(2)] = targetPart,
-            [utf8.char(3)] = Utility:EncodeCFrame(
-                targetPart.CFrame:ToObjectSpace(CFrame.new(targetPart.Position))
-            )
-        }
-
-        pcall(function()
+                [utf8.char(1)] = height
+                    and Utility:EncodeCFrame(
+                        CFrame.new(targetPart.Position)
+                        * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
+                    )
+                    or Utility:EncodeCFrame(
+                        CFrame.new(shootPos.X, shootPos.Y + (height or 0), shootPos.Z)
+                        * CFrame.Angles(CFrame.lookAt(shootPos, targetPart.Position):ToOrientation())
+                    ),
+                [utf8.char(2)] = targetPart,
+                [utf8.char(3)] = Utility:EncodeCFrame(
+                    targetPart.CFrame:ToObjectSpace(CFrame.new(targetPart.Position))
+                )
+            }
             rs.Remotes.Replication.Fighter.UseItem:FireServer(
                 item:Get("ObjectID"),
                 EnumLibrary:ToEnum("StartShooting"),
@@ -781,23 +714,17 @@ RunService.Heartbeat:Connect(function()
                 nil
             )
         end)
-        ::skipRage::
     end
 
-    -- Auto-TP loop
+    -- Auto-TP
     if State.AutoTP then
         local now = tick()
-
-        -- Refresh player list every 2s
         if now % 2 < 0.05 then updateTPList() end
-
         if #tpPlayerList > 0 then
-            -- Cycle target every 3 seconds
             if now - lastCycle >= 3 then
                 tpCurrentIndex = (tpCurrentIndex % #tpPlayerList) + 1
                 lastCycle = now
             end
-            -- Teleport every 0.5s
             if now - lastTeleport >= 0.5 then
                 local target = tpPlayerList[tpCurrentIndex]
                 if target then tpToHead(target) end
@@ -822,4 +749,4 @@ config_manager:LoadAutoloadConfig()
 
 window:SetBackgroundColor(Color3.fromRGB(20, 20, 20))
 window:SetBackgroundTransparency(0.3)
-window:Notify("Rivals Hub", "All systems loaded! Press Insert to toggle.", 5)
+window:Notify("Rivals Hub", "Loaded! Press Insert to toggle.", 5)
